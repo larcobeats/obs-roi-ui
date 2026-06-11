@@ -64,9 +64,9 @@ RoiEditor::RoiEditor(QWidget *parent)
 			 Smoothing::Edge);
 
 	connect(ui->close, &QPushButton::clicked, this, &RoiEditor::close);
-	connect(ui->enableRoi, &QCheckBox::stateChanged, this,
+	connect(ui->enableRoi, &QCheckBox::checkStateChanged, this,
 		&RoiEditor::UpdateEncoders);
-	connect(ui->excludeRecordings, &QCheckBox::stateChanged, this,
+	connect(ui->excludeRecordings, &QCheckBox::checkStateChanged, this,
 		&RoiEditor::UpdateEncoders);
 
 	connect(ui->sceneSelect, &QComboBox::currentIndexChanged, this,
@@ -91,7 +91,7 @@ RoiEditor::RoiEditor(QWidget *parent)
 		&RoiEditor::PropertiesChanges);
 	connect(ui->roiPropSceneItem, &QComboBox::currentIndexChanged, this,
 		&RoiEditor::PropertiesChanges);
-	connect(ui->roiPropEnabled, &QCheckBox::stateChanged, this,
+	connect(ui->roiPropEnabled, &QCheckBox::checkStateChanged, this,
 		&RoiEditor::PropertiesChanges);
 	connect(ui->roiPropOuterPrioritySlider, &QSlider::valueChanged, this,
 		&RoiEditor::PropertiesChanges);
@@ -103,9 +103,9 @@ RoiEditor::RoiEditor(QWidget *parent)
 		&RoiEditor::PropertiesChanges);
 	connect(ui->roiPropRadiusOuterSb, &QSpinBox::valueChanged, this,
 		&RoiEditor::PropertiesChanges);
-	connect(ui->roiPropRadiusOuterAspect, &QCheckBox::stateChanged, this,
+	connect(ui->roiPropRadiusOuterAspect, &QCheckBox::checkStateChanged, this,
 		&RoiEditor::PropertiesChanges);
-	connect(ui->roiPropRadiusInnerAspect, &QCheckBox::stateChanged, this,
+	connect(ui->roiPropRadiusInnerAspect, &QCheckBox::checkStateChanged, this,
 		&RoiEditor::PropertiesChanges);
 	connect(ui->roiPropManualSmoothingSteps, &QSpinBox::valueChanged, this,
 		&RoiEditor::PropertiesChanges);
@@ -117,7 +117,7 @@ RoiEditor::RoiEditor(QWidget *parent)
 		&RoiEditor::PropertiesChanges);
 	connect(ui->roiPropCenterPosY, &QSpinBox::valueChanged, this,
 		&RoiEditor::PropertiesChanges);
-	connect(ui->roiPropRadiusInnerCircle, &QCheckBox::stateChanged, this,
+	connect(ui->roiPropRadiusInnerCircle, &QCheckBox::checkStateChanged, this,
 		&RoiEditor::PropertiesChanges);
 }
 
@@ -138,12 +138,9 @@ void RoiEditor::CreateDisplay(bool recreate)
 		ui->previewLayout->insertWidget(idx, ui->preview);
 	}
 
-	/* Show warning about scaling if in use. */
-	obs_video_info ovi;
-	obs_get_video_info(&ovi);
-	const bool is_scaled = ovi.base_height != ovi.output_height ||
-			       ovi.base_width != ovi.output_width;
-	ui->roiErrorLabel->setVisible(is_scaled);
+	/* Regions are scaled from base (canvas) to output resolution when
+	 * applied to encoders, so scaling no longer needs a warning. */
+	ui->roiErrorLabel->setVisible(false);
 
 	auto addDrawCallback = [this]() {
 		obs_display_add_draw_callback(ui->preview->GetDisplay(),
@@ -496,8 +493,6 @@ static obs_encoder_roi GetItemROI(obs_sceneitem_t *item, float priority)
 
 	matrix4 boxTransform;
 	obs_sceneitem_get_box_transform(item, &boxTransform);
-
-	/* ToDo: Scale to output resolution. */
 
 	vec3 tl, br;
 	vec3_set(&tl, M_INFINITE, M_INFINITE, 0.0f);
@@ -918,6 +913,27 @@ void RoiEditor::UpdateEncoders()
 	auto regions = RegionsFromData(uuid);
 	if (regions.empty())
 		return;
+
+	/* Regions are built in base (canvas) coordinates, but encoders take
+	 * coordinates relative to their input, i.e. the output resolution.
+	 * libobs itself handles further scaling for rescaled encoders such as
+	 * the Enhanced Broadcasting/multitrack video tracks. */
+	obs_video_info ovi;
+	if (obs_get_video_info(&ovi) && ovi.base_width && ovi.base_height &&
+	    (ovi.base_width != ovi.output_width ||
+	     ovi.base_height != ovi.output_height)) {
+		const double scale_x =
+			(double)ovi.output_width / (double)ovi.base_width;
+		const double scale_y =
+			(double)ovi.output_height / (double)ovi.base_height;
+
+		for (obs_encoder_roi &roi : regions) {
+			roi.top = (uint32_t)((double)roi.top * scale_y);
+			roi.bottom = (uint32_t)((double)roi.bottom * scale_y);
+			roi.left = (uint32_t)((double)roi.left * scale_x);
+			roi.right = (uint32_t)((double)roi.right * scale_x);
+		}
+	}
 
 	for (obs_encoder_t *enc : encoders) {
 		/* We might have already set the ROI (e.g. shared streaming/recording encoder) */
