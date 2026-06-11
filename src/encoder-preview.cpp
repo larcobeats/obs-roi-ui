@@ -450,9 +450,11 @@ void EncoderPreview::DecodeThread()
 				continue;
 
 			while (ReceiveFrame(codecContext, av_frame)) {
-				AVFrameToSourceFrame(&frame, av_frame,
-						     {pkt->timebase_num,
-						      pkt->timebase_den});
+				if (!AVFrameToSourceFrame(&frame, av_frame,
+							  {pkt->timebase_num,
+							   pkt->timebase_den}))
+					continue;
+
 				obs_source_output_video(previewSource, &frame);
 
 				if (state != PLAYING)

@@ -1,5 +1,10 @@
 #include "encoder-preview-ff-glue.hpp"
 
+extern "C" {
+#include <libavutil/pixdesc.h>
+}
+
+#include <climits>
 #include <string_view>
 
 static AVCodecID NameToAVCodecID(const std::string_view &str)
@@ -21,15 +26,20 @@ static video_format AVPixelFormatToOBSFormat(int f)
 	case AV_PIX_FMT_NONE:
 		return VIDEO_FORMAT_NONE;
 	case AV_PIX_FMT_YUV420P:
+	case AV_PIX_FMT_YUVJ420P:
 		return VIDEO_FORMAT_I420;
 	case AV_PIX_FMT_YUYV422:
 		return VIDEO_FORMAT_YUY2;
 	case AV_PIX_FMT_YUV422P:
+	case AV_PIX_FMT_YUVJ422P:
 		return VIDEO_FORMAT_I422;
 	case AV_PIX_FMT_YUV422P10LE:
 		return VIDEO_FORMAT_I210;
 	case AV_PIX_FMT_YUV444P:
+	case AV_PIX_FMT_YUVJ444P:
 		return VIDEO_FORMAT_I444;
+	case AV_PIX_FMT_GRAY8:
+		return VIDEO_FORMAT_Y800;
 	case AV_PIX_FMT_YUV444P12LE:
 		return VIDEO_FORMAT_I412;
 	case AV_PIX_FMT_UYVY422:
@@ -113,6 +123,18 @@ bool CreateCodecContext(AVCodecContext **ctx, obs_encoder_t *enc)
 	(*ctx)->width = obs_encoder_get_width(enc);
 	(*ctx)->height = obs_encoder_get_height(enc);
 
+	/* Give the decoder the encoder headers (SPS/PPS/sequence header) up
+	 * front so it can decode from the first keyframe. */
+	uint8_t *extra_data;
+	size_t extra_size;
+	if (obs_encoder_get_extra_data(enc, &extra_data, &extra_size) &&
+	    extra_size) {
+		(*ctx)->extradata = static_cast<uint8_t *>(av_mallocz(
+			extra_size + AV_INPUT_BUFFER_PADDING_SIZE));
+		memcpy((*ctx)->extradata, extra_data, extra_size);
+		(*ctx)->extradata_size = static_cast<int>(extra_size);
+	}
+
 	if (int ret = avcodec_open2(*ctx, codec, nullptr)) {
 		log_av_error("avcodec_open2", ret);
 		avcodec_free_context(ctx);
@@ -134,15 +156,15 @@ bool SendExtraData(AVCodecContext *ctx, obs_encoder_t *enc)
 	av_packet.size = static_cast<int>(packet.size);
 	av_packet.data = packet.data;
 
-	return avcodec_send_packet(ctx, &av_packet) != 0;
+	return avcodec_send_packet(ctx, &av_packet) == 0;
 }
 
 bool SendPacket(AVCodecContext *ctx, const encoder_packet *pkt)
 {
 	AVPacket av_packet = {};
 	av_packet.size = static_cast<int>(pkt->size);
-	av_packet.pts = static_cast<int>(pkt->pts);
-	av_packet.dts = static_cast<int>(pkt->dts);
+	av_packet.pts = pkt->pts;
+	av_packet.dts = pkt->dts;
 	av_packet.data = pkt->data;
 
 	if (int ret = avcodec_send_packet(ctx, &av_packet)) {
@@ -169,10 +191,28 @@ bool ReceiveFrame(AVCodecContext *ctx, AVFrame *frame)
 	return false;
 }
 
-void AVFrameToSourceFrame(obs_source_frame *dst, AVFrame *src,
+bool AVFrameToSourceFrame(obs_source_frame *dst, AVFrame *src,
 			  AVRational time_base)
 {
 	memset(dst, 0, sizeof(obs_source_frame));
+
+	video_format format = AVPixelFormatToOBSFormat(src->format);
+
+	/* Passing a frame with VIDEO_FORMAT_NONE (or zero dimensions) to
+	 * obs_source_output_video() results in a zero-byte allocation, which
+	 * libobs (31+) treats as a fatal error and crashes on. */
+	if (format == VIDEO_FORMAT_NONE || !src->width || !src->height) {
+		static int last_logged_format = INT_MIN;
+		if (last_logged_format != src->format) {
+			last_logged_format = src->format;
+			const char *name = av_get_pix_fmt_name(
+				static_cast<AVPixelFormat>(src->format));
+			blog(LOG_WARNING,
+			     "[obs-roi-ui] Dropping decoded frame with unsupported pixel format: %s (%dx%d)",
+			     name ? name : "unknown", src->width, src->height);
+		}
+		return false;
+	}
 
 	dst->width = src->width;
 	dst->height = src->height;
@@ -180,7 +220,6 @@ void AVFrameToSourceFrame(obs_source_frame *dst, AVFrame *src,
 				      {1, 1000000000});
 
 	video_range_type range = AVRangeToOBSRange(src->color_range);
-	video_format format = AVPixelFormatToOBSFormat(src->format);
 	video_colorspace space = AVColorSpaceToOBSSpace(
 		src->colorspace, src->color_trc, src->color_primaries);
 
@@ -216,4 +255,6 @@ void AVFrameToSourceFrame(obs_source_frame *dst, AVFrame *src,
 		dst->data[i] = src->data[i];
 		dst->linesize[i] = abs(src->linesize[i]);
 	}
+
+	return true;
 }
