@@ -154,6 +154,16 @@
            </layout>
           </item>
           <item row="1" column="1">
+           <widget class="QLabel" name="roiPropPriorityHint">
+            <property name="toolTip">
+             <string>ROI.Tooltip.PriorityHint</string>
+            </property>
+            <property name="text">
+             <string/>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
            <widget class="QCheckBox" name="roiPropEnabled">
             <property name="toolTip">
              <string>ROI.Tooltip.RegionEnabled</string>

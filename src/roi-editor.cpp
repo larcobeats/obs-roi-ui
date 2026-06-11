@@ -29,6 +29,36 @@ static obs_hotkey_id roi_toggle_hotkey_id = OBS_INVALID_HOTKEY_ID;
 /// ToDo cleanup this whole refresh mess, just rebuild data always when necessary,
 /// and then update preview if visible, always run encoder update.
 
+/* Translate the abstract priority percentage into the concrete effect it has
+ * on NVENC, so users can tell that the useful range saturates well before
+ * 100% (OBS maps priority to a QP offset: x51 for H.264/HEVC, x128 for AV1,
+ * against a total QP range of 0-51 / 0-255). */
+static QString PriorityHintText(int percent)
+{
+	if (percent == 0)
+		return obs_module_text("ROI.PriorityHint.None");
+
+	const float priority = (float)percent / 100.0f;
+	const int qp_avc = (int)(-51.0f * priority);
+	const int qp_av1 = (int)(-128.0f * priority);
+
+	const int magnitude = abs(percent);
+	const char *strength;
+	if (magnitude <= 10)
+		strength = "ROI.PriorityHint.Subtle";
+	else if (magnitude <= 25)
+		strength = "ROI.PriorityHint.Moderate";
+	else if (magnitude <= 40)
+		strength = "ROI.PriorityHint.Strong";
+	else
+		strength = "ROI.PriorityHint.Max";
+
+	return QString(obs_module_text("ROI.PriorityHint"))
+		.arg(qp_avc)
+		.arg(qp_av1)
+		.arg(obs_module_text(strength));
+}
+
 RoiEditor::RoiEditor(QWidget *parent)
 	: QDialog(parent),
 	  ui(new Ui_ROIEditor),
@@ -129,6 +159,14 @@ RoiEditor::RoiEditor(QWidget *parent)
 		&RoiEditor::PropertiesChanges);
 	connect(ui->roiPropSceneItemPadding, &QSpinBox::valueChanged, this,
 		&RoiEditor::PropertiesChanges);
+
+	connect(ui->roiPropPrioritySlider, &QSlider::valueChanged, this,
+		[&](int value) {
+			ui->roiPropPriorityHint->setText(
+				PriorityHintText(value));
+		});
+	ui->roiPropPriorityHint->setText(
+		PriorityHintText(ui->roiPropPrioritySlider->value()));
 
 	ui->preview->installEventFilter(this);
 }
