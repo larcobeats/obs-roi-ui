@@ -32,7 +32,11 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 	  timer(this)
 {
 	ui->setupUi(this);
-	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
+	/* Min/max buttons make this behave like a regular window, including
+	 * Windows snap (Win+Arrow / drag to edge). */
+	setWindowFlags((windowFlags() | Qt::WindowMinimizeButtonHint |
+			Qt::WindowMaximizeButtonHint) &
+		       ~Qt::WindowContextHelpButtonHint);
 
 	ui->hwdecodeCb->hide();
 
@@ -57,6 +61,13 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 	connect(ui->compareCb, &QCheckBox::checkStateChanged, this,
 		[&](Qt::CheckState state) {
 			compareEnabled = state == Qt::Checked;
+			ui->compareVerticalCb->setEnabled(state ==
+							  Qt::Checked);
+		});
+
+	connect(ui->compareVerticalCb, &QCheckBox::checkStateChanged, this,
+		[&](Qt::CheckState state) {
+			compareVertical = state == Qt::Checked;
 		});
 
 	connect(&timer, &QTimer::timeout, this, &EncoderPreview::UpdateStats);
@@ -199,19 +210,23 @@ void EncoderPreview::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 	int viewport_x, viewport_y;
 	float scale;
 
-	/* Side-by-side comparison: raw program on the left half, decoded
-	 * encoder output on the right half. */
+	/* Comparison view: raw program in the first half, decoded encoder
+	 * output in the second, split horizontally or vertically. */
 	if (editor->state == PLAYING && editor->compareEnabled) {
 		obs_video_info ovi;
 		obs_get_video_info(&ovi);
 
-		uint32_t half = cx / 2;
+		const bool vertical = editor->compareVertical;
+		const uint32_t pane_cx = vertical ? cx : cx / 2;
+		const uint32_t pane_cy = vertical ? cy / 2 : cy;
+		const uint32_t pane_off_x = vertical ? 0 : cx / 2;
+		const uint32_t pane_off_y = vertical ? cy / 2 : 0;
 
 		gs_viewport_push();
 		gs_projection_push();
 
-		GetScaleAndCenterPos(ovi.base_width, ovi.base_height, half,
-				     cy, viewport_x, viewport_y, scale);
+		GetScaleAndCenterPos(ovi.base_width, ovi.base_height, pane_cx,
+				     pane_cy, viewport_x, viewport_y, scale);
 		gs_ortho(0.0f, float(ovi.base_width), 0.0f,
 			 float(ovi.base_height), -100.0f, 100.0f);
 		gs_set_viewport(viewport_x, viewport_y,
@@ -219,11 +234,12 @@ void EncoderPreview::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 				int(scale * float(ovi.base_height)));
 		obs_render_main_texture_src_color_only();
 
-		GetScaleAndCenterPos(width, height, half, cy, viewport_x,
-				     viewport_y, scale);
+		GetScaleAndCenterPos(width, height, pane_cx, pane_cy,
+				     viewport_x, viewport_y, scale);
 		gs_ortho(0.0f, float(width), 0.0f, float(height), -100.0f,
 			 100.0f);
-		gs_set_viewport(viewport_x + half, viewport_y,
+		gs_set_viewport(viewport_x + pane_off_x,
+				viewport_y + pane_off_y,
 				int(scale * float(width)),
 				int(scale * float(height)));
 		obs_source_video_render(editor->previewSource);
@@ -365,6 +381,8 @@ void EncoderPreview::SaveSettings(obs_data_t *data)
 	obs_data_set_bool(data, "run_in_background",
 			  ui->runInBackGroundCb->isChecked());
 	obs_data_set_bool(data, "compare", ui->compareCb->isChecked());
+	obs_data_set_bool(data, "compare_vertical",
+			  ui->compareVerticalCb->isChecked());
 	obs_data_set_string(data, "window_geometry",
 			    saveGeometry().toBase64().constData());
 }
@@ -374,6 +392,8 @@ void EncoderPreview::LoadSettings(obs_data_t *data)
 	ui->runInBackGroundCb->setChecked(
 		obs_data_get_bool(data, "run_in_background"));
 	ui->compareCb->setChecked(obs_data_get_bool(data, "compare"));
+	ui->compareVerticalCb->setChecked(
+		obs_data_get_bool(data, "compare_vertical"));
 
 	if (const char *geo = obs_data_get_string(data, "window_geometry"))
 		geometry = QByteArray::fromBase64(geo);

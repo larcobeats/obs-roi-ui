@@ -36,7 +36,11 @@ RoiEditor::RoiEditor(QWidget *parent)
 {
 	ui->setupUi(this);
 
-	setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
+	/* Min/max buttons make this behave like a regular window, including
+	 * Windows snap (Win+Arrow / drag to edge). */
+	setWindowFlags((windowFlags() | Qt::WindowMinimizeButtonHint |
+			Qt::WindowMaximizeButtonHint) &
+		       ~Qt::WindowContextHelpButtonHint);
 
 	// Work around Qt not allowing this as a custom property
 	setThemeID(ui->roiWarningLabel, "warning");
