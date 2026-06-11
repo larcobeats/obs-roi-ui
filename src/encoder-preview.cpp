@@ -54,6 +54,11 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 	connect(ui->refreshBtn, &QPushButton::clicked, this,
 		&EncoderPreview::RefreshEncoders);
 
+	connect(ui->compareCb, &QCheckBox::checkStateChanged, this,
+		[&](Qt::CheckState state) {
+			compareEnabled = state == Qt::Checked;
+		});
+
 	connect(&timer, &QTimer::timeout, this, &EncoderPreview::UpdateStats);
 	timer.setInterval(2000);
 
@@ -194,6 +199,40 @@ void EncoderPreview::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 	int viewport_x, viewport_y;
 	float scale;
 
+	/* Side-by-side comparison: raw program on the left half, decoded
+	 * encoder output on the right half. */
+	if (editor->state == PLAYING && editor->compareEnabled) {
+		obs_video_info ovi;
+		obs_get_video_info(&ovi);
+
+		uint32_t half = cx / 2;
+
+		gs_viewport_push();
+		gs_projection_push();
+
+		GetScaleAndCenterPos(ovi.base_width, ovi.base_height, half,
+				     cy, viewport_x, viewport_y, scale);
+		gs_ortho(0.0f, float(ovi.base_width), 0.0f,
+			 float(ovi.base_height), -100.0f, 100.0f);
+		gs_set_viewport(viewport_x, viewport_y,
+				int(scale * float(ovi.base_width)),
+				int(scale * float(ovi.base_height)));
+		obs_render_main_texture_src_color_only();
+
+		GetScaleAndCenterPos(width, height, half, cy, viewport_x,
+				     viewport_y, scale);
+		gs_ortho(0.0f, float(width), 0.0f, float(height), -100.0f,
+			 100.0f);
+		gs_set_viewport(viewport_x + half, viewport_y,
+				int(scale * float(width)),
+				int(scale * float(height)));
+		obs_source_video_render(editor->previewSource);
+
+		gs_projection_pop();
+		gs_viewport_pop();
+		return;
+	}
+
 	GetScaleAndCenterPos(width, height, cx, cy, viewport_x, viewport_y,
 			     scale);
 
@@ -325,6 +364,7 @@ void EncoderPreview::SaveSettings(obs_data_t *data)
 {
 	obs_data_set_bool(data, "run_in_background",
 			  ui->runInBackGroundCb->isChecked());
+	obs_data_set_bool(data, "compare", ui->compareCb->isChecked());
 	obs_data_set_string(data, "window_geometry",
 			    saveGeometry().toBase64().constData());
 }
@@ -333,6 +373,7 @@ void EncoderPreview::LoadSettings(obs_data_t *data)
 {
 	ui->runInBackGroundCb->setChecked(
 		obs_data_get_bool(data, "run_in_background"));
+	ui->compareCb->setChecked(obs_data_get_bool(data, "compare"));
 
 	if (const char *geo = obs_data_get_string(data, "window_geometry"))
 		geometry = QByteArray::fromBase64(geo);

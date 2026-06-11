@@ -77,6 +77,7 @@ private:
 
 	std::thread decoder;
 	std::atomic_bool threadKill = false;
+	std::atomic_bool compareEnabled = false;
 
 	std::mutex packetMutex;
 	std::condition_variable packetCond;

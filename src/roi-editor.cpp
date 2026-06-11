@@ -14,13 +14,17 @@
 #include <util/profiler.hpp>
 
 #include <QAction>
+#include <QFileDialog>
 #include <QMainWindow>
+#include <QMessageBox>
+#include <QMouseEvent>
 #include <QObject>
 #include <QMenu>
 
 using namespace std;
 
 RoiEditor *roi_edit;
+static obs_hotkey_id roi_toggle_hotkey_id = OBS_INVALID_HOTKEY_ID;
 
 /// ToDo cleanup this whole refresh mess, just rebuild data always when necessary,
 /// and then update preview if visible, always run encoder update.
@@ -119,6 +123,10 @@ RoiEditor::RoiEditor(QWidget *parent)
 		&RoiEditor::PropertiesChanges);
 	connect(ui->roiPropRadiusInnerCircle, &QCheckBox::checkStateChanged, this,
 		&RoiEditor::PropertiesChanges);
+	connect(ui->roiPropSceneItemPadding, &QSpinBox::valueChanged, this,
+		&RoiEditor::PropertiesChanges);
+
+	ui->preview->installEventFilter(this);
 }
 
 void RoiEditor::CreateDisplay(bool recreate)
@@ -134,6 +142,9 @@ void RoiEditor::CreateDisplay(bool recreate)
 		ui->preview->setObjectName("preview");
 		ui->preview->setSizePolicy(policy);
 		ui->preview->setMinimumSize(minimum);
+		ui->preview->setToolTip(
+			obs_module_text("ROI.Tooltip.Preview"));
+		ui->preview->installEventFilter(this);
 
 		ui->previewLayout->insertWidget(idx, ui->preview);
 	}
@@ -147,6 +158,112 @@ void RoiEditor::CreateDisplay(bool recreate)
 					      RoiEditor::DrawPreview, this);
 	};
 	connect(ui->preview, &OBSQTDisplay::DisplayCreated, addDrawCallback);
+}
+
+bool RoiEditor::PreviewToCanvas(const QPointF &pos, uint32_t &canvas_x,
+				uint32_t &canvas_y)
+{
+	obs_video_info ovi;
+	if (!obs_get_video_info(&ovi))
+		return false;
+
+	QSize size = GetPixelSize(ui->preview);
+	int viewport_x, viewport_y;
+	float scale;
+
+	GetScaleAndCenterPos(ovi.base_width, ovi.base_height, size.width(),
+			     size.height(), viewport_x, viewport_y, scale);
+
+	if (scale <= 0.0f)
+		return false;
+
+	qreal dpr = ui->preview->devicePixelRatioF();
+	double x = (pos.x() * dpr - viewport_x) / scale;
+	double y = (pos.y() * dpr - viewport_y) / scale;
+
+	canvas_x = (uint32_t)std::clamp(x, 0.0, (double)ovi.base_width);
+	canvas_y = (uint32_t)std::clamp(y, 0.0, (double)ovi.base_height);
+	return true;
+}
+
+bool RoiEditor::eventFilter(QObject *obj, QEvent *event)
+{
+	if (obj != ui->preview)
+		return QDialog::eventFilter(obj, event);
+
+	auto updateDragItem = [&](const QPointF &pos) {
+		uint32_t x, y;
+		if (!PreviewToCanvas(pos, x, y))
+			return;
+
+		RoiData roi = dragItem->data(ROIData).value<RoiData>();
+		roi.posX = std::min(dragStartX, x);
+		roi.posY = std::min(dragStartY, y);
+		roi.width = std::max(
+			dragStartX > x ? dragStartX - x : x - dragStartX,
+			16u);
+		roi.height = std::max(
+			dragStartY > y ? dragStartY - y : y - dragStartY,
+			16u);
+		dragItem->setData(ROIData, QVariant::fromValue<RoiData>(roi));
+	};
+
+	switch (event->type()) {
+	case QEvent::MouseButtonPress: {
+		auto mouse = static_cast<QMouseEvent *>(event);
+		if (mouse->button() != Qt::LeftButton)
+			break;
+
+		uint32_t x, y;
+		if (!PreviewToCanvas(mouse->position(), x, y))
+			break;
+
+		dragStartX = x;
+		dragStartY = y;
+
+		dragItem = new RoiListItem(RoiListItem::Manual);
+		RoiData roi = {};
+		roi.enabled = true;
+		roi.priority = 0.25f;
+		roi.posX = x;
+		roi.posY = y;
+		roi.width = 16;
+		roi.height = 16;
+		dragItem->setData(ROIData,
+				  QVariant::fromValue<RoiData>(roi));
+
+		QSignalBlocker sb(ui->roiList);
+		ui->roiList->insertItem(0, dragItem);
+		return true;
+	}
+	case QEvent::MouseMove: {
+		if (!dragItem)
+			break;
+
+		auto mouse = static_cast<QMouseEvent *>(event);
+		updateDragItem(mouse->position());
+		RegionItemsToData();
+		UpdatePreview();
+		return true;
+	}
+	case QEvent::MouseButtonRelease: {
+		if (!dragItem)
+			break;
+
+		auto mouse = static_cast<QMouseEvent *>(event);
+		updateDragItem(mouse->position());
+
+		RoiListItem *item = dragItem;
+		dragItem = nullptr;
+		ui->roiList->setCurrentItem(item);
+		RefreshData();
+		return true;
+	}
+	default:
+		break;
+	}
+
+	return QDialog::eventFilter(obj, event);
 }
 
 void RoiEditor::RefreshSceneList()
@@ -177,6 +294,49 @@ void RoiEditor::RefreshSceneList()
 	ui->sceneSelect->setCurrentIndex(idx);
 }
 
+/* Combo box entries store a QVariantList of {item id, parent group item id}
+ * so that sources inside groups can be targeted individually. The group id
+ * is -1 for top-level items (including groups themselves). */
+static QVariantList SceneItemComboData(int64_t item_id, int64_t group_id)
+{
+	return QVariantList{static_cast<qlonglong>(item_id),
+			    static_cast<qlonglong>(group_id)};
+}
+
+struct SceneItemEnumCtx {
+	QComboBox *cb;
+	obs_sceneitem_t *group = nullptr;
+};
+
+static bool AddSceneItemToCombo(obs_scene_t *, obs_sceneitem_t *item,
+				void *param)
+{
+	auto ctx = static_cast<SceneItemEnumCtx *>(param);
+
+	QString name =
+		QT_UTF8(obs_source_get_name(obs_sceneitem_get_source(item)));
+	int64_t group_id = -1;
+
+	if (ctx->group) {
+		name = QString("%1 → %2").arg(
+			QT_UTF8(obs_source_get_name(
+				obs_sceneitem_get_source(ctx->group))),
+			name);
+		group_id = obs_sceneitem_get_id(ctx->group);
+	}
+
+	ctx->cb->addItem(name, SceneItemComboData(obs_sceneitem_get_id(item),
+						  group_id));
+
+	if (!ctx->group && obs_sceneitem_is_group(item)) {
+		SceneItemEnumCtx child_ctx{ctx->cb, item};
+		obs_sceneitem_group_enum_items(item, AddSceneItemToCombo,
+					       &child_ctx);
+	}
+
+	return true;
+}
+
 void RoiEditor::RefreshSceneItems()
 {
 	if (!ui->roiPropSceneItem->isVisible())
@@ -191,23 +351,15 @@ void RoiEditor::RefreshSceneItems()
 		return;
 
 	QSignalBlocker sb(ui->roiPropSceneItem);
-	QVariant scene_item_id = ui->roiPropSceneItem->currentData();
+	QVariant scene_item_data = ui->roiPropSceneItem->currentData();
 
 	ui->roiPropSceneItem->clear();
-	obs_scene_enum_items(
-		obs_scene_from_source(source),
-		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
-			auto cb = static_cast<QComboBox *>(param);
-			cb->addItem(obs_source_get_name(
-					    obs_sceneitem_get_source(item)),
-				    obs_sceneitem_get_id(item));
-			return true;
-		},
-		ui->roiPropSceneItem);
+	SceneItemEnumCtx ctx{ui->roiPropSceneItem};
+	obs_scene_enum_items(obs_scene_from_source(source),
+			     AddSceneItemToCombo, &ctx);
 
-	if (scene_item_id.isValid()) {
-		int idx = ui->roiPropSceneItem->findData(
-			scene_item_id.toLongLong());
+	if (scene_item_data.isValid()) {
+		int idx = ui->roiPropSceneItem->findData(scene_item_data);
 		if (idx != -1)
 			ui->roiPropSceneItem->setCurrentIndex(idx);
 	}
@@ -258,8 +410,12 @@ void RoiEditor::PropertiesChanges()
 
 	if (item->type() == RoiListItem::SceneItem) {
 		data.scene_item_name = ui->roiPropSceneItem->currentText();
-		data.scene_item_id =
-			ui->roiPropSceneItem->currentData().toLongLong();
+		QVariantList ids = ui->roiPropSceneItem->currentData().toList();
+		if (ids.size() == 2) {
+			data.scene_item_id = ids[0].toLongLong();
+			data.scene_item_group_id = ids[1].toLongLong();
+		}
+		data.padding = ui->roiPropSceneItemPadding->value();
 	} else if (item->type() == RoiListItem::Manual) {
 		data.posX = ui->roiPropPosX->value();
 		data.posY = ui->roiPropPosY->value();
@@ -320,9 +476,12 @@ void RoiEditor::ItemSelected(QListWidgetItem *item, QListWidgetItem *)
 			ui->roiSceneItemPropertiesGroupBox);
 
 		RefreshSceneItems();
-		int idx = ui->roiPropSceneItem->findData(data.scene_item_id);
+		int idx = ui->roiPropSceneItem->findData(SceneItemComboData(
+			data.scene_item_id, data.scene_item_group_id));
 		if (idx != -1)
 			ui->roiPropSceneItem->setCurrentIndex(idx);
+
+		ui->roiPropSceneItemPadding->setValue((int)data.padding);
 
 	} else if (item->type() == RoiListItem::Manual) {
 		ui->roiPropertiesStack->setCurrentWidget(
@@ -399,6 +558,38 @@ void RoiEditor::UpdatePreview()
  * Region<->Data Conversions
  */
 
+/* Resolve the current source name for a scene item region so the list shows
+ * something readable even for regions saved by older versions. */
+static QString ResolveSceneItemName(obs_source_t *scene_source,
+				    int64_t item_id, int64_t group_id)
+{
+	obs_scene_t *scene = obs_scene_from_source(scene_source);
+	if (!scene)
+		return QString();
+
+	obs_sceneitem_t *group = nullptr;
+	if (group_id >= 0) {
+		group = obs_scene_find_sceneitem_by_id(scene, group_id);
+		if (!group || !obs_sceneitem_is_group(group))
+			return QString();
+		scene = obs_sceneitem_group_get_scene(group);
+	}
+
+	obs_sceneitem_t *item = obs_scene_find_sceneitem_by_id(scene, item_id);
+	if (!item)
+		return QString();
+
+	QString name =
+		QT_UTF8(obs_source_get_name(obs_sceneitem_get_source(item)));
+	if (group)
+		name = QString("%1 → %2").arg(
+			QT_UTF8(obs_source_get_name(
+				obs_sceneitem_get_source(group))),
+			name);
+
+	return name;
+}
+
 void RoiEditor::RegionItemsFromData()
 {
 	auto var = ui->sceneSelect->currentData();
@@ -408,9 +599,20 @@ void RoiEditor::RegionItemsFromData()
 	ui->roiList->clear();
 
 	const string scene_uuid = var.toString().toStdString();
+	OBSSourceAutoRelease scene_source =
+		obs_get_source_by_uuid(scene_uuid.c_str());
+
 	for (obs_data_t *roi : roi_data[scene_uuid]) {
 		int type = obs_data_get_int(roi, "type");
 		RoiData data = RoiData::fromObsData(roi);
+
+		if (type == RoiListItem::SceneItem && scene_source) {
+			QString name = ResolveSceneItemName(
+				scene_source, data.scene_item_id,
+				data.scene_item_group_id);
+			if (!name.isEmpty())
+				data.scene_item_name = name;
+		}
 
 		RoiListItem *item = new RoiListItem(type);
 		item->setData(ROIData, QVariant::fromValue<RoiData>(data));
@@ -443,8 +645,16 @@ void RoiEditor::RegionItemsToData()
 		obs_data_set_int(data, "type", item->type());
 
 		if (item->type() == RoiListItem::SceneItem) {
+			obs_data_set_string(
+				data, "scene_item_name",
+				roi.scene_item_name.toUtf8().constData());
 			obs_data_set_int(data, "scene_item_id",
 					 roi.scene_item_id);
+			if (roi.scene_item_group_id >= 0)
+				obs_data_set_int(data, "scene_item_group_id",
+						 roi.scene_item_group_id);
+			if (roi.padding > 0)
+				obs_data_set_int(data, "padding", roi.padding);
 			obs_data_set_int(data, "smoothing_steps",
 					 roi.smoothing_steps);
 			obs_data_set_int(data, "smoothing_type",
@@ -487,12 +697,22 @@ void RoiEditor::RegionItemsToData()
 	}
 }
 
-static obs_encoder_roi GetItemROI(obs_sceneitem_t *item, float priority)
+static obs_encoder_roi GetItemROI(obs_sceneitem_t *item,
+				  obs_sceneitem_t *group, float priority,
+				  int64_t padding)
 {
 	obs_encoder_roi roi;
 
 	matrix4 boxTransform;
 	obs_sceneitem_get_box_transform(item, &boxTransform);
+
+	/* Items inside a group are positioned relative to the group, so
+	 * compose with the group's transform to get canvas coordinates. */
+	if (group) {
+		matrix4 groupTransform;
+		obs_sceneitem_get_draw_transform(group, &groupTransform);
+		matrix4_mul(&boxTransform, &boxTransform, &groupTransform);
+	}
 
 	vec3 tl, br;
 	vec3_set(&tl, M_INFINITE, M_INFINITE, 0.0f);
@@ -511,10 +731,12 @@ static obs_encoder_roi GetItemROI(obs_sceneitem_t *item, float priority)
 	GetMinPos(0.0f, 1.0f);
 	GetMinPos(1.0f, 1.0f);
 
-	roi.left = static_cast<uint32_t>(std::max(tl.x, 0.0f));
-	roi.top = static_cast<uint32_t>(std::max(tl.y, 0.0f));
-	roi.right = static_cast<uint32_t>(std::max(br.x, 0.0f));
-	roi.bottom = static_cast<uint32_t>(std::max(br.y, 0.0f));
+	const float pad = static_cast<float>(padding);
+
+	roi.left = static_cast<uint32_t>(std::max(tl.x - pad, 0.0f));
+	roi.top = static_cast<uint32_t>(std::max(tl.y - pad, 0.0f));
+	roi.right = static_cast<uint32_t>(std::max(br.x + pad, 0.0f));
+	roi.bottom = static_cast<uint32_t>(std::max(br.y + pad, 0.0f));
 	roi.priority = priority;
 
 	return roi;
@@ -772,11 +994,44 @@ vector<obs_encoder_roi> RoiEditor::RegionsFromData(const string &uuid)
 		if (type == RoiListItem::SceneItem) {
 			/* Scene Item ROI */
 			int64_t id = obs_data_get_int(data, "scene_item_id");
-			OBSSceneItem sceneItem = obs_scene_find_sceneitem_by_id(
-				obs_scene_from_source(source), id);
+			int64_t group_id =
+				obs_data_has_user_value(data,
+							"scene_item_group_id")
+					? obs_data_get_int(
+						  data, "scene_item_group_id")
+					: -1;
+			int64_t padding = obs_data_get_int(data, "padding");
 
-			if (sceneItem && obs_sceneitem_visible(sceneItem)) {
-				auto roi = GetItemROI(sceneItem, priority);
+			OBSSceneItem sceneItem;
+			OBSSceneItem groupItem;
+			bool visible = false;
+
+			if (group_id >= 0) {
+				groupItem = obs_scene_find_sceneitem_by_id(
+					obs_scene_from_source(source),
+					group_id);
+				if (groupItem &&
+				    obs_sceneitem_is_group(groupItem)) {
+					sceneItem = obs_scene_find_sceneitem_by_id(
+						obs_sceneitem_group_get_scene(
+							groupItem),
+						id);
+					visible = sceneItem &&
+						  obs_sceneitem_visible(
+							  groupItem) &&
+						  obs_sceneitem_visible(
+							  sceneItem);
+				}
+			} else {
+				sceneItem = obs_scene_find_sceneitem_by_id(
+					obs_scene_from_source(source), id);
+				visible = sceneItem &&
+					  obs_sceneitem_visible(sceneItem);
+			}
+
+			if (visible) {
+				auto roi = GetItemROI(sceneItem, groupItem,
+						      priority, padding);
 				if (roi.bottom == 0 || roi.right == 0)
 					continue;
 
@@ -846,6 +1101,11 @@ void RoiEditor::ShowHideDialog()
 	}
 }
 
+void RoiEditor::ToggleRoiEnabled()
+{
+	ui->enableRoi->toggle();
+}
+
 void RoiEditor::UpdateEncoders()
 {
 	OBSSourceAutoRelease scene = obs_frontend_get_current_scene();
@@ -898,21 +1158,25 @@ void RoiEditor::UpdateEncoders()
 		obs_enum_encoders(cb, &encoders);
 	}
 
-	if (encoders.empty())
+	if (encoders.empty()) {
+		SetStatusLabel({});
 		return;
+	}
 
 	// Clear any ROIs that might exist
 	for (obs_encoder_t *enc : encoders)
 		obs_encoder_clear_roi(enc);
 
-	if (!ui->enableRoi->isChecked())
+	if (!ui->enableRoi->isChecked() || !roi_data.count(uuid)) {
+		SetStatusLabel({});
 		return;
-	if (!roi_data.count(uuid))
-		return;
+	}
 
 	auto regions = RegionsFromData(uuid);
-	if (regions.empty())
+	if (regions.empty()) {
+		SetStatusLabel({});
 		return;
+	}
 
 	/* Regions are built in base (canvas) coordinates, but encoders take
 	 * coordinates relative to their input, i.e. the output resolution.
@@ -939,10 +1203,30 @@ void RoiEditor::UpdateEncoders()
 		/* We might have already set the ROI (e.g. shared streaming/recording encoder) */
 		if (obs_encoder_has_roi(enc))
 			continue;
-		blog(LOG_DEBUG, "Adding ROI to encoder: %s",
+		blog(LOG_INFO, "Adding ROI to encoder: %s",
 		     obs_encoder_get_name(enc));
 		for (const obs_encoder_roi &roi : regions)
 			obs_encoder_add_roi(enc, &roi);
+	}
+
+	QStringList applied;
+	for (obs_encoder_t *enc : encoders) {
+		if (obs_encoder_has_roi(enc))
+			applied << QT_UTF8(obs_encoder_get_name(enc));
+	}
+	SetStatusLabel(applied);
+}
+
+void RoiEditor::SetStatusLabel(const QStringList &encoder_names)
+{
+	if (encoder_names.isEmpty()) {
+		ui->roiStatusLabel->setText(
+			obs_module_text("ROI.Status.None"));
+	} else {
+		ui->roiStatusLabel->setText(
+			QString(obs_module_text("ROI.Status.Applied"))
+				.arg(encoder_names.size())
+				.arg(encoder_names.join(", ")));
 	}
 }
 
@@ -963,6 +1247,29 @@ void RoiEditor::AddRegionItem(int type)
 	RefreshData();
 }
 
+void RoiEditor::AddBackgroundItem()
+{
+	obs_video_info ovi;
+	if (!obs_get_video_info(&ovi))
+		return;
+
+	auto item = new RoiListItem(RoiListItem::Manual);
+	RoiData roi = {};
+	roi.enabled = true;
+	roi.priority = -0.25f;
+	roi.posX = 0;
+	roi.posY = 0;
+	roi.width = ovi.base_width;
+	roi.height = ovi.base_height;
+	item->setData(ROIData, QVariant::fromValue<RoiData>(roi));
+
+	/* Insert at the bottom so explicit regions above it win on overlap. */
+	ui->roiList->addItem(item);
+	ui->roiList->setCurrentItem(item);
+
+	RefreshData();
+}
+
 void RoiEditor::on_actionAddRoi_triggered()
 {
 	auto popup = QMenu(obs_module_text("ROI.AddMenu"), this);
@@ -973,6 +1280,8 @@ void RoiEditor::on_actionAddRoi_triggered()
 		new QAction(obs_module_text("ROI.AddMenu.Manual"), this);
 	QAction *addCenterRoi =
 		new QAction(obs_module_text("ROI.AddMenu.CenterFocus"), this);
+	QAction *addBackgroundRoi =
+		new QAction(obs_module_text("ROI.AddMenu.Background"), this);
 
 	connect(addSceneItemRoi, &QAction::triggered,
 		[this] { AddRegionItem(RoiListItem::SceneItem); });
@@ -980,12 +1289,146 @@ void RoiEditor::on_actionAddRoi_triggered()
 		[this] { AddRegionItem(RoiListItem::Manual); });
 	connect(addCenterRoi, &QAction::triggered,
 		[this] { AddRegionItem(RoiListItem::CenterFocus); });
+	connect(addBackgroundRoi, &QAction::triggered,
+		[this] { AddBackgroundItem(); });
 
 	popup.insertAction(nullptr, addSceneItemRoi);
 	popup.insertAction(addSceneItemRoi, addManualRoi);
 	popup.insertAction(addManualRoi, addCenterRoi);
+	popup.insertAction(addCenterRoi, addBackgroundRoi);
 
 	popup.exec(QCursor::pos());
+}
+
+void RoiEditor::on_actionCopyRegions_triggered()
+{
+	auto var = ui->sceneSelect->currentData();
+	if (!var.isValid())
+		return;
+
+	const string current_uuid = var.toString().toStdString();
+
+	/* Make sure the stored data reflects the current UI state */
+	RegionItemsToData();
+
+	QMenu popup(obs_module_text("ROI.CopyMenu"), this);
+
+	QAction *allScenes =
+		popup.addAction(obs_module_text("ROI.CopyMenu.AllScenes"));
+	allScenes->setData(QString());
+	popup.addSeparator();
+
+	obs_frontend_source_list scenes = {};
+	obs_frontend_get_scenes(&scenes);
+
+	for (size_t idx = 0; idx < scenes.sources.num; idx++) {
+		obs_source_t *src = scenes.sources.array[idx];
+		const char *uuid = obs_source_get_uuid(src);
+		if (current_uuid == uuid)
+			continue;
+
+		QAction *action =
+			popup.addAction(QT_UTF8(obs_source_get_name(src)));
+		action->setData(QString(uuid));
+	}
+
+	obs_frontend_source_list_free(&scenes);
+
+	QAction *chosen = popup.exec(QCursor::pos());
+	if (!chosen)
+		return;
+
+	auto copyTo = [&](const string &target_uuid) {
+		if (target_uuid == current_uuid)
+			return;
+
+		auto &dst = roi_data[target_uuid];
+		dst.clear();
+		for (obs_data_t *region : roi_data[current_uuid]) {
+			dst.emplace_back(obs_data_create_from_json(
+				obs_data_get_json(region)));
+		}
+	};
+
+	QString selected = chosen->data().toString();
+	if (selected.isEmpty()) {
+		obs_frontend_source_list all = {};
+		obs_frontend_get_scenes(&all);
+		for (size_t idx = 0; idx < all.sources.num; idx++) {
+			copyTo(obs_source_get_uuid(all.sources.array[idx]));
+		}
+		obs_frontend_source_list_free(&all);
+	} else {
+		copyTo(selected.toStdString());
+	}
+
+	obs_frontend_save();
+	UpdateEncoders();
+}
+
+void RoiEditor::on_actionExportRegions_triggered()
+{
+	auto var = ui->sceneSelect->currentData();
+	if (!var.isValid())
+		return;
+
+	RegionItemsToData();
+	const string uuid = var.toString().toStdString();
+
+	QString path = QFileDialog::getSaveFileName(
+		this, obs_module_text("ROI.Export"), QString(),
+		"JSON (*.json)");
+	if (path.isEmpty())
+		return;
+
+	OBSDataAutoRelease root = obs_data_create();
+	OBSDataArrayAutoRelease arr = obs_data_array_create();
+
+	for (obs_data_t *region : roi_data[uuid])
+		obs_data_array_push_back(arr, region);
+
+	obs_data_set_array(root, "regions", arr);
+
+	if (!obs_data_save_json(root, QT_TO_UTF8(path))) {
+		QMessageBox::warning(this, obs_module_text("ROI.Export"),
+				     obs_module_text("ROI.Export.Failed"));
+	}
+}
+
+void RoiEditor::on_actionImportRegions_triggered()
+{
+	auto var = ui->sceneSelect->currentData();
+	if (!var.isValid())
+		return;
+
+	const string uuid = var.toString().toStdString();
+
+	QString path = QFileDialog::getOpenFileName(
+		this, obs_module_text("ROI.Import"), QString(),
+		"JSON (*.json)");
+	if (path.isEmpty())
+		return;
+
+	OBSDataAutoRelease root =
+		obs_data_create_from_json_file(QT_TO_UTF8(path));
+	OBSDataArrayAutoRelease arr =
+		root ? obs_data_get_array(root, "regions") : nullptr;
+	size_t count = arr ? obs_data_array_count(arr) : 0;
+
+	if (!count) {
+		QMessageBox::warning(this, obs_module_text("ROI.Import"),
+				     obs_module_text("ROI.Import.Failed"));
+		return;
+	}
+
+	auto &dst = roi_data[uuid];
+	dst.clear();
+	for (size_t idx = 0; idx < count; idx++)
+		dst.emplace_back(obs_data_array_item(arr, idx));
+
+	RegionItemsFromData();
+	RefreshData();
+	obs_frontend_save();
 }
 
 void RoiEditor::on_actionRemoveRoi_triggered()
@@ -1068,6 +1511,43 @@ void RoiEditor::ConnectSceneSignals()
 	sceneSignals.emplace_back(signal, "item_remove", ItemRemovedOrAdded,
 				  this);
 	sceneSignals.emplace_back(signal, "refresh", ItemRemovedOrAdded, this);
+
+	/* Items inside groups emit their signals on the group's sub-scene,
+	 * so connect those as well to track changes within groups. */
+	obs_scene_enum_items(
+		obs_scene_from_source(source),
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			if (!obs_sceneitem_is_group(item))
+				return true;
+
+			auto editor = static_cast<RoiEditor *>(param);
+			obs_scene_t *group_scene =
+				obs_sceneitem_group_get_scene(item);
+			signal_handler_t *group_signal =
+				obs_source_get_signal_handler(
+					obs_scene_get_source(group_scene));
+			if (!group_signal)
+				return true;
+
+			editor->sceneSignals.emplace_back(group_signal,
+							  "item_transform",
+							  SceneItemChanged,
+							  editor);
+			editor->sceneSignals.emplace_back(group_signal,
+							  "item_visible",
+							  SceneItemChanged,
+							  editor);
+			editor->sceneSignals.emplace_back(group_signal,
+							  "item_add",
+							  ItemRemovedOrAdded,
+							  editor);
+			editor->sceneSignals.emplace_back(group_signal,
+							  "item_remove",
+							  ItemRemovedOrAdded,
+							  editor);
+			return true;
+		},
+		this);
 }
 
 /*
@@ -1283,6 +1763,13 @@ void RoiEditor::LoadRoisFromOBSData(obs_data_t *obj)
 	if (obs_data_has_user_value(obj, "opacity"))
 		ui->previewOpacity->setValue(obs_data_get_int(obj, "opacity"));
 
+	if (roi_toggle_hotkey_id != OBS_INVALID_HOTKEY_ID) {
+		OBSDataArrayAutoRelease hotkey =
+			obs_data_get_array(obj, "toggle_hotkey");
+		if (hotkey)
+			obs_hotkey_load(roi_toggle_hotkey_id, hotkey);
+	}
+
 	OBSDataAutoRelease scenes = obs_data_get_obj(obj, "scenes");
 	obs_data_item *item = obs_data_first(scenes);
 
@@ -1320,6 +1807,12 @@ void RoiEditor::SaveRoisToOBSData(obs_data_t *obj) const
 	if (debug_draw) {
 		obs_data_set_bool(obj, "debug_draw", debug_draw);
 		obs_data_set_bool(obj, "debug_draw_single", debug_draw_single);
+	}
+
+	if (roi_toggle_hotkey_id != OBS_INVALID_HOTKEY_ID) {
+		OBSDataArrayAutoRelease hotkey =
+			obs_hotkey_save(roi_toggle_hotkey_id);
+		obs_data_set_array(obj, "toggle_hotkey", hotkey);
 	}
 
 	obs_data_set_bool(obj, "enabled", ui->enableRoi->isChecked());
@@ -1362,9 +1855,14 @@ RoiData RoiData::fromObsData(obs_data_t *obj)
 	data.enabled = obs_data_get_bool(obj, "enabled");
 	data.priority = (float)obs_data_get_double(obj, "priority");
 
+	data.padding = obs_data_get_int(obj, "padding");
+
 	// Leave these as default values unless specified otherwise
 	if (obs_data_has_user_value(obj, "scene_item_id"))
 		data.scene_item_id = obs_data_get_int(obj, "scene_item_id");
+	if (obs_data_has_user_value(obj, "scene_item_group_id"))
+		data.scene_item_group_id =
+			obs_data_get_int(obj, "scene_item_group_id");
 	if (obs_data_has_user_value(obj, "center_x"))
 		data.center_x = obs_data_get_int(obj, "center_x");
 	if (obs_data_has_user_value(obj, "center_y"))
@@ -1454,6 +1952,14 @@ static void OBSEvent(obs_frontend_event event, void *)
 	}
 }
 
+static void RoiToggleHotkey(void *, obs_hotkey_id, obs_hotkey_t *,
+			    bool pressed)
+{
+	if (pressed && roi_edit)
+		QMetaObject::invokeMethod(roi_edit, "ToggleRoiEnabled",
+					  Qt::QueuedConnection);
+}
+
 /*
  * C stuff
  */
@@ -1470,6 +1976,10 @@ extern "C" void InitRoiEditor()
 	obs_frontend_push_ui_translation(obs_module_get_string);
 	roi_edit = new RoiEditor(window);
 	obs_frontend_pop_ui_translation();
+
+	roi_toggle_hotkey_id = obs_hotkey_register_frontend(
+		"obs-roi-ui.toggle", obs_module_text("ROI.Hotkey.Toggle"),
+		RoiToggleHotkey, nullptr);
 
 	obs_frontend_add_save_callback(SaveRoiEditor, nullptr);
 	obs_frontend_add_event_callback(OBSEvent, nullptr);

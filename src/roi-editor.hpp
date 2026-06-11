@@ -14,6 +14,9 @@ struct RoiData {
 	/* Scene item type*/
 	QString scene_item_name;
 	int64_t scene_item_id = -1;
+	/* Parent group item id if the scene item is inside a group */
+	int64_t scene_item_group_id = -1;
+	int64_t padding = 0;
 	/* Manual type */
 	uint32_t posX, posY, width, height;
 	/* Center focus type */
@@ -65,12 +68,16 @@ public slots:
 	void ShowHideDialog();
 	void UpdateEncoders();
 	void RefreshSceneList();
+	void ToggleRoiEnabled();
 
 private slots:
 	void on_actionAddRoi_triggered();
 	void on_actionRemoveRoi_triggered();
 	void on_actionRoiUp_triggered();
 	void on_actionRoiDown_triggered();
+	void on_actionCopyRegions_triggered();
+	void on_actionImportRegions_triggered();
+	void on_actionExportRegions_triggered();
 
 	void SceneSelectionChanged();
 	void ItemSelected(QListWidgetItem *item, QListWidgetItem *);
@@ -82,6 +89,7 @@ private slots:
 
 private:
 	void AddRegionItem(int type);
+	void AddBackgroundItem();
 
 	void RegionItemsToData();
 	void RegionItemsFromData();
@@ -89,8 +97,12 @@ private:
 	std::vector<obs_encoder_roi> RegionsFromData(const std::string &uuid);
 	void MoveRoiItem(Direction direction);
 	void CreateDisplay(bool recreate = false);
+	void SetStatusLabel(const QStringList &encoder_names);
+	bool PreviewToCanvas(const QPointF &pos, uint32_t &canvas_x,
+			     uint32_t &canvas_y);
 
 	void closeEvent(QCloseEvent *event) override;
+	bool eventFilter(QObject *obj, QEvent *event) override;
 
 	static void SceneItemChanged(void *param, calldata_t *data);
 	static void ItemRemovedOrAdded(void *param, calldata_t *data);
@@ -125,6 +137,11 @@ private:
 	// Qt stuff
 	RoiListItem *currentItem = nullptr;
 	QByteArray geometry;
+
+	// Drag-to-draw state (preview mouse interaction)
+	RoiListItem *dragItem = nullptr;
+	uint32_t dragStartX = 0;
+	uint32_t dragStartY = 0;
 };
 
 enum ROIDataRoles { ROIData = Qt::UserRole };

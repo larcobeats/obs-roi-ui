@@ -47,6 +47,9 @@
          </item>
          <item>
           <widget class="QComboBox" name="sceneSelect">
+           <property name="toolTip">
+            <string>ROI.Tooltip.Scene</string>
+           </property>
            <property name="sizePolicy">
             <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
              <horstretch>0</horstretch>
@@ -59,6 +62,9 @@
        </item>
        <item>
         <widget class="QListWidget" name="roiList">
+         <property name="toolTip">
+          <string>ROI.Tooltip.RegionList</string>
+         </property>
          <property name="sizePolicy">
           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
            <horstretch>0</horstretch>
@@ -83,6 +89,10 @@
          <addaction name="separator"/>
          <addaction name="actionRoiUp"/>
          <addaction name="actionRoiDown"/>
+         <addaction name="separator"/>
+         <addaction name="actionCopyRegions"/>
+         <addaction name="actionImportRegions"/>
+         <addaction name="actionExportRegions"/>
         </widget>
        </item>
        <item>
@@ -105,6 +115,9 @@
            <layout class="QHBoxLayout" name="horizontalLayout_7">
             <item>
              <widget class="QSlider" name="roiPropPrioritySlider">
+              <property name="toolTip">
+               <string>ROI.Tooltip.Priority</string>
+              </property>
               <property name="minimum">
                <number>-100</number>
               </property>
@@ -124,6 +137,9 @@
             </item>
             <item>
              <widget class="QSpinBox" name="roiPropPrioritySpinbox">
+              <property name="toolTip">
+               <string>ROI.Tooltip.Priority</string>
+              </property>
               <property name="suffix">
                <string notr="true"> %</string>
               </property>
@@ -139,6 +155,9 @@
           </item>
           <item row="1" column="1">
            <widget class="QCheckBox" name="roiPropEnabled">
+            <property name="toolTip">
+             <string>ROI.Tooltip.RegionEnabled</string>
+            </property>
             <property name="text">
              <string>ROI.Property.Enabled</string>
             </property>
@@ -178,6 +197,9 @@
            </item>
            <item row="0" column="1">
             <widget class="QComboBox" name="roiPropSceneItem">
+             <property name="toolTip">
+              <string>ROI.Tooltip.SceneItem</string>
+             </property>
              <property name="placeholderText">
               <string>ROI.Property.SceneItem.NoSelection</string>
              </property>
@@ -196,10 +218,17 @@
            <item row="1" column="1">
             <layout class="QHBoxLayout" name="horizontalLayout_15">
              <item>
-              <widget class="QComboBox" name="roiPropSceneItemSmoothing"/>
+              <widget class="QComboBox" name="roiPropSceneItemSmoothing">
+               <property name="toolTip">
+                <string>ROI.Tooltip.Smoothing</string>
+               </property>
+              </widget>
              </item>
              <item>
               <widget class="QSpinBox" name="roiPropSceneItemSmoothingSteps">
+               <property name="toolTip">
+                <string>ROI.Tooltip.SmoothingSteps</string>
+               </property>
                <property name="suffix">
                 <string>ROI.Property.Smoothing.StepsSuffix</string>
                </property>
@@ -227,6 +256,9 @@
             <layout class="QHBoxLayout" name="horizontalLayout_16">
              <item>
               <widget class="QSlider" name="roiPropSceneItemSmoothingPriority">
+               <property name="toolTip">
+                <string>ROI.Tooltip.SmoothingPriority</string>
+               </property>
                <property name="minimum">
                 <number>-100</number>
                </property>
@@ -240,6 +272,9 @@
              </item>
              <item>
               <widget class="QSpinBox" name="roiPropSceneItemSmoothingPrioritySb">
+               <property name="toolTip">
+                <string>ROI.Tooltip.SmoothingPriority</string>
+               </property>
                <property name="suffix">
                 <string> %</string>
                </property>
@@ -252,6 +287,29 @@
               </widget>
              </item>
             </layout>
+           </item>
+           <item row="3" column="0">
+            <widget class="QLabel" name="roiPropSceneItemPaddingLabel">
+             <property name="text">
+              <string>ROI.Property.Padding</string>
+             </property>
+             <property name="buddy">
+              <cstring>roiPropSceneItemPadding</cstring>
+             </property>
+            </widget>
+           </item>
+           <item row="3" column="1">
+            <widget class="QSpinBox" name="roiPropSceneItemPadding">
+             <property name="toolTip">
+              <string>ROI.Tooltip.Padding</string>
+             </property>
+             <property name="suffix">
+              <string> px</string>
+             </property>
+             <property name="maximum">
+              <number>1024</number>
+             </property>
+            </widget>
            </item>
           </layout>
          </widget>
@@ -274,6 +332,9 @@
             <layout class="QHBoxLayout" name="horizontalLayout_8">
              <item>
               <widget class="QSlider" name="roiPropOuterPrioritySlider">
+               <property name="toolTip">
+                <string>ROI.Tooltip.OuterPriority</string>
+               </property>
                <property name="minimum">
                 <number>-100</number>
                </property>
@@ -320,6 +381,9 @@
             <layout class="QHBoxLayout" name="horizontalLayout_9">
              <item>
               <widget class="QSpinBox" name="roiPropRadiusInnerSb">
+               <property name="toolTip">
+                <string>ROI.Tooltip.RadiusInner</string>
+               </property>
                <property name="suffix">
                 <string> px</string>
                </property>
@@ -358,6 +422,9 @@
             <layout class="QHBoxLayout" name="horizontalLayout_10">
              <item>
               <widget class="QSpinBox" name="roiPropRadiusOuterSb">
+               <property name="toolTip">
+                <string>ROI.Tooltip.RadiusOuter</string>
+               </property>
                <property name="suffix">
                 <string> px</string>
                </property>
@@ -578,10 +645,17 @@
            <item row="2" column="1">
             <layout class="QHBoxLayout" name="horizontalLayout_13">
              <item>
-              <widget class="QComboBox" name="roiPropManualSmoothing"/>
+              <widget class="QComboBox" name="roiPropManualSmoothing">
+               <property name="toolTip">
+                <string>ROI.Tooltip.Smoothing</string>
+               </property>
+              </widget>
              </item>
              <item>
               <widget class="QSpinBox" name="roiPropManualSmoothingSteps">
+               <property name="toolTip">
+                <string>ROI.Tooltip.SmoothingSteps</string>
+               </property>
                <property name="suffix">
                 <string>ROI.Property.Smoothing.StepsSuffix</string>
                </property>
@@ -609,6 +683,9 @@
             <layout class="QHBoxLayout" name="horizontalLayout_14">
              <item>
               <widget class="QSlider" name="roiPropManualSmoothingPriority">
+               <property name="toolTip">
+                <string>ROI.Tooltip.SmoothingPriority</string>
+               </property>
                <property name="minimum">
                 <number>-100</number>
                </property>
@@ -663,6 +740,9 @@
          </item>
          <item>
           <widget class="QComboBox" name="roiBlockSize">
+           <property name="toolTip">
+            <string>ROI.Tooltip.BlockSize</string>
+           </property>
            <property name="sizePolicy">
             <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
              <horstretch>0</horstretch>
@@ -688,6 +768,9 @@
        </item>
        <item>
         <widget class="OBSQTDisplay" name="preview" native="true">
+         <property name="toolTip">
+          <string>ROI.Tooltip.Preview</string>
+         </property>
          <property name="sizePolicy">
           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
            <horstretch>0</horstretch>
@@ -713,6 +796,9 @@
          </item>
          <item>
           <widget class="QSlider" name="previewOpacity">
+           <property name="toolTip">
+            <string>ROI.Tooltip.Opacity</string>
+           </property>
            <property name="maximum">
             <number>100</number>
            </property>
@@ -760,6 +846,19 @@
         </widget>
        </item>
        <item>
+        <widget class="QLabel" name="roiStatusLabel">
+         <property name="toolTip">
+          <string>ROI.Tooltip.Status</string>
+         </property>
+         <property name="text">
+          <string>ROI.Status.None</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QLabel" name="roiWarningLabel">
          <property name="text">
           <string>ROI.Usage.Warning</string>
@@ -781,6 +880,9 @@
     <layout class="QHBoxLayout" name="horizontalLayout_2">
      <item>
       <widget class="QCheckBox" name="enableRoi">
+       <property name="toolTip">
+        <string>ROI.Tooltip.Enable</string>
+       </property>
        <property name="text">
         <string>ROI.Enabled</string>
        </property>
@@ -788,6 +890,9 @@
      </item>
      <item>
       <widget class="QCheckBox" name="excludeRecordings">
+       <property name="toolTip">
+        <string>ROI.Tooltip.ExcludeRecording</string>
+       </property>
        <property name="text">
         <string>ROI.ExcludeRecordingEncoder</string>
        </property>
@@ -855,6 +960,30 @@
    </property>
    <property name="themeID" stdset="0">
     <string notr="true">downArrowIconSmall</string>
+   </property>
+  </action>
+  <action name="actionCopyRegions">
+   <property name="text">
+    <string>ROI.ItemAction.Copy</string>
+   </property>
+   <property name="toolTip">
+    <string>ROI.Tooltip.Copy</string>
+   </property>
+  </action>
+  <action name="actionImportRegions">
+   <property name="text">
+    <string>ROI.ItemAction.Import</string>
+   </property>
+   <property name="toolTip">
+    <string>ROI.Tooltip.Import</string>
+   </property>
+  </action>
+  <action name="actionExportRegions">
+   <property name="text">
+    <string>ROI.ItemAction.Export</string>
+   </property>
+   <property name="toolTip">
+    <string>ROI.Tooltip.Export</string>
    </property>
   </action>
  </widget>
