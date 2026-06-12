@@ -26,6 +26,23 @@ using namespace std;
 
 EncoderPreview *enc_preview;
 
+/* Qt only word-wraps tooltips when they are rich text, so plain tooltips
+ * from the .ui files would render as one excessively long line. */
+static void WordWrapToolTips(QWidget *root)
+{
+	const auto wrap = [](const QString &tip) {
+		if (tip.isEmpty() || tip.startsWith("<"))
+			return tip;
+		return QString("<qt>%1</qt>").arg(tip.toHtmlEscaped());
+	};
+
+	root->setToolTip(wrap(root->toolTip()));
+	for (QWidget *widget : root->findChildren<QWidget *>())
+		widget->setToolTip(wrap(widget->toolTip()));
+	for (QAction *action : root->findChildren<QAction *>())
+		action->setToolTip(wrap(action->toolTip()));
+}
+
 EncoderPreview::EncoderPreview(QWidget *parent)
 	: QDialog(parent),
 	  ui(new Ui_EncoderPreview),
@@ -75,6 +92,8 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 
 	CreatePreviewOutput();
 	CreatePreviewSource();
+
+	WordWrapToolTips(this);
 }
 
 /*
