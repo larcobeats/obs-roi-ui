@@ -98,6 +98,7 @@ private:
 	void MoveRoiItem(Direction direction);
 	void CreateDisplay(bool recreate = false);
 	void SetStatusLabel(const QStringList &encoder_names);
+	void UpdateCodecLabels(int h264, int hevc, int av1);
 	bool PreviewToCanvas(const QPointF &pos, uint32_t &canvas_x,
 			     uint32_t &canvas_y);
 

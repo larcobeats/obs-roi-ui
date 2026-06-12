@@ -166,12 +166,20 @@ RoiEditor::RoiEditor(QWidget *parent)
 				PriorityHintText(value));
 		});
 
-	connect(ui->roiCodecScaleH264, &QSpinBox::valueChanged, this,
-		&RoiEditor::UpdateEncoders);
-	connect(ui->roiCodecScaleHEVC, &QSpinBox::valueChanged, this,
-		&RoiEditor::UpdateEncoders);
-	connect(ui->roiCodecScaleAV1, &QSpinBox::valueChanged, this,
-		&RoiEditor::UpdateEncoders);
+	auto fillStrengthCombo = [&](QComboBox *cb) {
+		cb->addItem(obs_module_text("ROI.CodecScale.Disabled"), 0);
+		cb->addItem(obs_module_text("ROI.CodecScale.Weaker"), 50);
+		cb->addItem(obs_module_text("ROI.CodecScale.Normal"), 100);
+		cb->addItem(obs_module_text("ROI.CodecScale.Stronger"), 150);
+		cb->addItem(obs_module_text("ROI.CodecScale.Maximum"), 200);
+		cb->setCurrentIndex(2);
+		connect(cb, &QComboBox::currentIndexChanged, this,
+			&RoiEditor::UpdateEncoders);
+	};
+
+	fillStrengthCombo(ui->roiCodecScaleH264);
+	fillStrengthCombo(ui->roiCodecScaleHEVC);
+	fillStrengthCombo(ui->roiCodecScaleAV1);
 	ui->roiPropPriorityHint->setText(
 		PriorityHintText(ui->roiPropPrioritySlider->value()));
 
@@ -1268,6 +1276,7 @@ void RoiEditor::UpdateEncoders()
 
 	if (encoders.empty()) {
 		SetStatusLabel({});
+		UpdateCodecLabels(0, 0, 0);
 		return;
 	}
 
@@ -1307,31 +1316,53 @@ void RoiEditor::UpdateEncoders()
 		}
 	}
 
+	/* Show which codecs the active encoders actually use, so the strength
+	 * rows connect to something concrete. */
+	int count_h264 = 0, count_hevc = 0, count_av1 = 0;
+	for (obs_encoder_t *enc : encoders) {
+		const char *codec = obs_encoder_get_codec(enc);
+		if (!codec)
+			continue;
+		if (strcmp(codec, "h264") == 0)
+			count_h264++;
+		else if (strcmp(codec, "hevc") == 0)
+			count_hevc++;
+		else if (strcmp(codec, "av1") == 0)
+			count_av1++;
+	}
+	UpdateCodecLabels(count_h264, count_hevc, count_av1);
+
 	for (obs_encoder_t *enc : encoders) {
 		/* We might have already set the ROI (e.g. shared streaming/recording encoder) */
 		if (obs_encoder_has_roi(enc))
 			continue;
 
-		/* Per-codec priority scale */
+		/* Per-codec ROI strength */
 		int scale_pct = 100;
 		const char *codec = obs_encoder_get_codec(enc);
 		if (codec) {
 			if (strcmp(codec, "h264") == 0)
-				scale_pct = ui->roiCodecScaleH264->value();
+				scale_pct = ui->roiCodecScaleH264
+						    ->currentData()
+						    .toInt();
 			else if (strcmp(codec, "hevc") == 0)
-				scale_pct = ui->roiCodecScaleHEVC->value();
+				scale_pct = ui->roiCodecScaleHEVC
+						    ->currentData()
+						    .toInt();
 			else if (strcmp(codec, "av1") == 0)
-				scale_pct = ui->roiCodecScaleAV1->value();
+				scale_pct = ui->roiCodecScaleAV1
+						    ->currentData()
+						    .toInt();
 		}
 
 		if (scale_pct == 0) {
 			blog(LOG_INFO,
-			     "Skipping ROI for encoder: %s (codec scale 0%%)",
+			     "Skipping ROI for encoder: %s (codec disabled)",
 			     obs_encoder_get_name(enc));
 			continue;
 		}
 
-		blog(LOG_INFO, "Adding ROI to encoder: %s (priority scale %d%%)",
+		blog(LOG_INFO, "Adding ROI to encoder: %s (strength %d%%)",
 		     obs_encoder_get_name(enc), scale_pct);
 
 		const float factor = (float)scale_pct / 100.0f;
@@ -1348,6 +1379,21 @@ void RoiEditor::UpdateEncoders()
 			applied << QT_UTF8(obs_encoder_get_name(enc));
 	}
 	SetStatusLabel(applied);
+}
+
+void RoiEditor::UpdateCodecLabels(int h264, int hevc, int av1)
+{
+	auto label = [](const char *codec, int count) {
+		if (count <= 0)
+			return QString(codec);
+		return QString(obs_module_text("ROI.CodecScale.Active"))
+			.arg(codec)
+			.arg(count);
+	};
+
+	ui->codecScaleH264Label->setText(label("H.264", h264));
+	ui->codecScaleHEVCLabel->setText(label("HEVC", hevc));
+	ui->codecScaleAV1Label->setText(label("AV1", av1));
 }
 
 void RoiEditor::SetStatusLabel(const QStringList &encoder_names)
@@ -1922,15 +1968,28 @@ void RoiEditor::LoadRoisFromOBSData(obs_data_t *obj)
 	if (obs_data_has_user_value(obj, "opacity"))
 		ui->previewOpacity->setValue(obs_data_get_int(obj, "opacity"));
 
+	auto setStrength = [](QComboBox *cb, int pct) {
+		int best_idx = 0;
+		int best_diff = INT_MAX;
+		for (int idx = 0; idx < cb->count(); idx++) {
+			int diff = abs(cb->itemData(idx).toInt() - pct);
+			if (diff < best_diff) {
+				best_diff = diff;
+				best_idx = idx;
+			}
+		}
+		cb->setCurrentIndex(best_idx);
+	};
+
 	if (obs_data_has_user_value(obj, "codec_scale_h264"))
-		ui->roiCodecScaleH264->setValue(
-			(int)obs_data_get_int(obj, "codec_scale_h264"));
+		setStrength(ui->roiCodecScaleH264,
+			    (int)obs_data_get_int(obj, "codec_scale_h264"));
 	if (obs_data_has_user_value(obj, "codec_scale_hevc"))
-		ui->roiCodecScaleHEVC->setValue(
-			(int)obs_data_get_int(obj, "codec_scale_hevc"));
+		setStrength(ui->roiCodecScaleHEVC,
+			    (int)obs_data_get_int(obj, "codec_scale_hevc"));
 	if (obs_data_has_user_value(obj, "codec_scale_av1"))
-		ui->roiCodecScaleAV1->setValue(
-			(int)obs_data_get_int(obj, "codec_scale_av1"));
+		setStrength(ui->roiCodecScaleAV1,
+			    (int)obs_data_get_int(obj, "codec_scale_av1"));
 
 	if (roi_toggle_hotkey_id != OBS_INVALID_HOTKEY_ID) {
 		OBSDataArrayAutoRelease hotkey =
@@ -1985,11 +2044,11 @@ void RoiEditor::SaveRoisToOBSData(obs_data_t *obj) const
 	}
 
 	obs_data_set_int(obj, "codec_scale_h264",
-			 ui->roiCodecScaleH264->value());
+			 ui->roiCodecScaleH264->currentData().toInt());
 	obs_data_set_int(obj, "codec_scale_hevc",
-			 ui->roiCodecScaleHEVC->value());
+			 ui->roiCodecScaleHEVC->currentData().toInt());
 	obs_data_set_int(obj, "codec_scale_av1",
-			 ui->roiCodecScaleAV1->value());
+			 ui->roiCodecScaleAV1->currentData().toInt());
 
 	obs_data_set_bool(obj, "enabled", ui->enableRoi->isChecked());
 	obs_data_set_obj(obj, "scenes", scenes);
