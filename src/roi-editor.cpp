@@ -572,6 +572,7 @@ void RoiEditor::UpdatePreview()
 
 	preview_roi_mutex.lock();
 	preview_roi = RegionsFromData(scene_uuid);
+	preview_outlines = RegionOutlinesFromData(scene_uuid);
 	preview_roi_mutex.unlock();
 
 	QString usage = QString("%1 %2")
@@ -1007,6 +1008,86 @@ static void SmoothROI(vector<obs_encoder_roi> &regions,
 	}
 }
 
+/// Find the scene item (and parent group) a region targets; returns whether
+/// the item exists and is visible.
+static bool ResolveSceneItemRegion(obs_source_t *source, obs_data_t *data,
+				   OBSSceneItem &sceneItem,
+				   OBSSceneItem &groupItem, int64_t &padding)
+{
+	int64_t id = obs_data_get_int(data, "scene_item_id");
+	int64_t group_id =
+		obs_data_has_user_value(data, "scene_item_group_id")
+			? obs_data_get_int(data, "scene_item_group_id")
+			: -1;
+	padding = obs_data_get_int(data, "padding");
+
+	if (group_id >= 0) {
+		groupItem = obs_scene_find_sceneitem_by_id(
+			obs_scene_from_source(source), group_id);
+		if (!groupItem || !obs_sceneitem_is_group(groupItem))
+			return false;
+
+		sceneItem = obs_scene_find_sceneitem_by_id(
+			obs_sceneitem_group_get_scene(groupItem), id);
+		return sceneItem && obs_sceneitem_visible(groupItem) &&
+		       obs_sceneitem_visible(sceneItem);
+	}
+
+	sceneItem = obs_scene_find_sceneitem_by_id(
+		obs_scene_from_source(source), id);
+	return sceneItem && obs_sceneitem_visible(sceneItem);
+}
+
+/// Exact (unsnapped) rectangles of enabled regions, for preview outlines.
+/// Center focus regions are skipped as they consist of many stacked rings.
+vector<obs_encoder_roi> RoiEditor::RegionOutlinesFromData(const string &uuid)
+{
+	const auto &region_data = roi_data[uuid];
+	if (region_data.empty())
+		return {};
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.c_str());
+	if (!source)
+		return {};
+
+	vector<obs_encoder_roi> outlines;
+
+	for (obs_data_t *data : region_data) {
+		if (!obs_data_get_bool(data, "enabled"))
+			continue;
+
+		auto type = static_cast<RoiListItem::RoiItemType>(
+			obs_data_get_int(data, "type"));
+
+		if (type == RoiListItem::SceneItem) {
+			OBSSceneItem sceneItem;
+			OBSSceneItem groupItem;
+			int64_t padding;
+			if (!ResolveSceneItemRegion(source, data, sceneItem,
+						    groupItem, padding))
+				continue;
+
+			auto roi = GetItemROI(
+				sceneItem, groupItem,
+				(float)obs_data_get_double(data, "priority"),
+				padding);
+			if (roi.bottom && roi.right)
+				outlines.push_back(roi);
+		} else if (type == RoiListItem::Manual) {
+			uint32_t left = (uint32_t)obs_data_get_int(data, "x");
+			uint32_t top = (uint32_t)obs_data_get_int(data, "y");
+			uint32_t right = left + (uint32_t)obs_data_get_int(
+							data, "width");
+			uint32_t bottom = top + (uint32_t)obs_data_get_int(
+							data, "height");
+			if (right && bottom)
+				outlines.push_back(
+					{top, bottom, left, right, 0.0f});
+		}
+	}
+
+	return outlines;
+}
+
 /// Create actual obs_encoder_roi structs from configured regions
 vector<obs_encoder_roi> RoiEditor::RegionsFromData(const string &uuid)
 {
@@ -1035,41 +1116,11 @@ vector<obs_encoder_roi> RoiEditor::RegionsFromData(const string &uuid)
 
 		if (type == RoiListItem::SceneItem) {
 			/* Scene Item ROI */
-			int64_t id = obs_data_get_int(data, "scene_item_id");
-			int64_t group_id =
-				obs_data_has_user_value(data,
-							"scene_item_group_id")
-					? obs_data_get_int(
-						  data, "scene_item_group_id")
-					: -1;
-			int64_t padding = obs_data_get_int(data, "padding");
-
 			OBSSceneItem sceneItem;
 			OBSSceneItem groupItem;
-			bool visible = false;
-
-			if (group_id >= 0) {
-				groupItem = obs_scene_find_sceneitem_by_id(
-					obs_scene_from_source(source),
-					group_id);
-				if (groupItem &&
-				    obs_sceneitem_is_group(groupItem)) {
-					sceneItem = obs_scene_find_sceneitem_by_id(
-						obs_sceneitem_group_get_scene(
-							groupItem),
-						id);
-					visible = sceneItem &&
-						  obs_sceneitem_visible(
-							  groupItem) &&
-						  obs_sceneitem_visible(
-							  sceneItem);
-				}
-			} else {
-				sceneItem = obs_scene_find_sceneitem_by_id(
-					obs_scene_from_source(source), id);
-				visible = sceneItem &&
-					  obs_sceneitem_visible(sceneItem);
-			}
+			int64_t padding;
+			bool visible = ResolveSceneItemRegion(
+				source, data, sceneItem, groupItem, padding);
 
 			if (visible) {
 				auto roi = GetItemROI(sceneItem, groupItem,
@@ -1779,6 +1830,32 @@ void RoiEditor::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 
 		gs_enable_framebuffer_srgb(previous);
 	}
+
+	/* Draw exact region rectangles so users can tell the precise target
+	 * area apart from the encoder's block-granularity coverage. */
+	editor->preview_roi_mutex.lock();
+	if (!editor->preview_outlines.empty()) {
+		gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+		gs_eparam_t *color =
+			gs_effect_get_param_by_name(solid, "color");
+		gs_effect_set_color(color, 0xFFFFFFFF);
+
+		while (gs_effect_loop(solid, "Solid")) {
+			for (const obs_encoder_roi &roi :
+			     editor->preview_outlines) {
+				gs_render_start(false);
+				gs_vertex2f((float)roi.left, (float)roi.top);
+				gs_vertex2f((float)roi.right, (float)roi.top);
+				gs_vertex2f((float)roi.right,
+					    (float)roi.bottom);
+				gs_vertex2f((float)roi.left,
+					    (float)roi.bottom);
+				gs_vertex2f((float)roi.left, (float)roi.top);
+				gs_render_stop(GS_LINESTRIP);
+			}
+		}
+	}
+	editor->preview_roi_mutex.unlock();
 
 	gs_projection_pop();
 	gs_viewport_pop();

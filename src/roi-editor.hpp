@@ -119,9 +119,14 @@ private:
 
 	bool enumerate_all_encoders = false;
 
+	std::vector<obs_encoder_roi>
+	RegionOutlinesFromData(const std::string &uuid);
+
 	// Rendering stuff
 	std::mutex preview_roi_mutex;
 	std::vector<obs_encoder_roi> preview_roi;
+	/* Exact (unsnapped) region rectangles for the preview outlines */
+	std::vector<obs_encoder_roi> preview_outlines;
 	OBSWeakSourceAutoRelease previewSource;
 
 	bool debug_draw = false;
