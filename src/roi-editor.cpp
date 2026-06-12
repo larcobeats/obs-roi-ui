@@ -782,6 +782,14 @@ static obs_encoder_roi GetItemROI(obs_sceneitem_t *item,
 	roi.bottom = static_cast<uint32_t>(std::max(br.y + pad, 0.0f));
 	roi.priority = priority;
 
+	/* Negative padding may shrink the region into nothing; collapse it
+	 * instead of letting the edges cross (the resulting region is
+	 * rejected as too small rather than wrapping around). */
+	if (roi.right < roi.left)
+		roi.right = roi.left;
+	if (roi.bottom < roi.top)
+		roi.bottom = roi.top;
+
 	return roi;
 }
 
