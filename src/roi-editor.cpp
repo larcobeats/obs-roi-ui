@@ -183,20 +183,48 @@ RoiEditor::RoiEditor(QWidget *parent)
 				PriorityHintText(value));
 		});
 
-	auto fillStrengthCombo = [&](QComboBox *cb) {
-		cb->addItem(obs_module_text("ROI.CodecScale.Disabled"), 0);
-		cb->addItem(obs_module_text("ROI.CodecScale.Weaker"), 50);
-		cb->addItem(obs_module_text("ROI.CodecScale.Normal"), 100);
-		cb->addItem(obs_module_text("ROI.CodecScale.Stronger"), 150);
-		cb->addItem(obs_module_text("ROI.CodecScale.Maximum"), 200);
-		cb->setCurrentIndex(2);
-		connect(cb, &QComboBox::currentIndexChanged, this,
-			&RoiEditor::UpdateEncoders);
+	/* Per-codec priority overrides: slider/spinbox pairs, hidden unless
+	 * customization is enabled for the selected region. */
+	auto wirePerCodecRow = [&](QSlider *slider, QSpinBox *spinbox) {
+		connect(slider, &QSlider::valueChanged, spinbox,
+			&QSpinBox::setValue);
+		connect(spinbox, &QSpinBox::valueChanged, slider,
+			&QSlider::setValue);
+		connect(slider, &QSlider::valueChanged, this,
+			&RoiEditor::PropertiesChanges);
 	};
 
-	fillStrengthCombo(ui->roiCodecScaleH264);
-	fillStrengthCombo(ui->roiCodecScaleHEVC);
-	fillStrengthCombo(ui->roiCodecScaleAV1);
+	wirePerCodecRow(ui->roiPropPriorityH264, ui->roiPropPriorityH264Sb);
+	wirePerCodecRow(ui->roiPropPriorityHEVC, ui->roiPropPriorityHEVCSb);
+	wirePerCodecRow(ui->roiPropPriorityAV1, ui->roiPropPriorityAV1Sb);
+
+	ui->roiPropPerCodecWidget->setVisible(false);
+
+	connect(ui->roiPropPerCodec, &QCheckBox::checkStateChanged, this,
+		[&](Qt::CheckState state) {
+			const bool checked = state == Qt::Checked;
+			ui->roiPropPerCodecWidget->setVisible(checked);
+
+			/* Start the overrides from the base priority */
+			if (checked &&
+			    !ui->roiPropPriorityH264->value() &&
+			    !ui->roiPropPriorityHEVC->value() &&
+			    !ui->roiPropPriorityAV1->value()) {
+				const int base =
+					ui->roiPropPrioritySlider->value();
+				QSignalBlocker b1(ui->roiPropPriorityH264);
+				QSignalBlocker b2(ui->roiPropPriorityHEVC);
+				QSignalBlocker b3(ui->roiPropPriorityAV1);
+				ui->roiPropPriorityH264->setValue(base);
+				ui->roiPropPriorityHEVC->setValue(base);
+				ui->roiPropPriorityAV1->setValue(base);
+				ui->roiPropPriorityH264Sb->setValue(base);
+				ui->roiPropPriorityHEVCSb->setValue(base);
+				ui->roiPropPriorityAV1Sb->setValue(base);
+			}
+
+			PropertiesChanges();
+		});
 	ui->roiPropPriorityHint->setText(
 		PriorityHintText(ui->roiPropPrioritySlider->value()));
 
@@ -552,6 +580,12 @@ void RoiEditor::PropertiesChanges()
 	RoiData data = {};
 	data.priority = (float)ui->roiPropPrioritySlider->value() / 100.0f;
 	data.enabled = ui->roiPropEnabled->isChecked();
+	data.per_codec_priority = ui->roiPropPerCodec->isChecked();
+	data.priority_h264 =
+		(float)ui->roiPropPriorityH264->value() / 100.0f;
+	data.priority_hevc =
+		(float)ui->roiPropPriorityHEVC->value() / 100.0f;
+	data.priority_av1 = (float)ui->roiPropPriorityAV1->value() / 100.0f;
 	// ToDo link those to the other ones
 	data.smoothing_steps = ui->roiPropManualSmoothingSteps->value();
 	data.smoothing_type = ui->roiPropManualSmoothing->currentData().toInt();
@@ -610,6 +644,16 @@ void RoiEditor::ItemSelected(QListWidgetItem *item, QListWidgetItem *)
 	// Generic properties
 	ui->roiPropEnabled->setChecked(data.enabled);
 	ui->roiPropPrioritySlider->setValue((int)(100 * data.priority));
+
+	{
+		QSignalBlocker pb(ui->roiPropPerCodec);
+		ui->roiPropPerCodec->setChecked(data.per_codec_priority);
+		ui->roiPropPerCodecWidget->setVisible(
+			data.per_codec_priority);
+	}
+	ui->roiPropPriorityH264->setValue((int)(100 * data.priority_h264));
+	ui->roiPropPriorityHEVC->setValue((int)(100 * data.priority_hevc));
+	ui->roiPropPriorityAV1->setValue((int)(100 * data.priority_av1));
 
 	// The "Manual" widgets act as a master for all other ones for the same values
 	ui->roiPropManualSmoothingPriority->setValue(
@@ -794,6 +838,16 @@ void RoiEditor::RegionItemsToData()
 		obs_data_set_double(data, "priority", roi.priority);
 		obs_data_set_bool(data, "enabled", roi.enabled);
 		obs_data_set_int(data, "type", item->type());
+
+		if (roi.per_codec_priority) {
+			obs_data_set_bool(data, "per_codec_priority", true);
+			obs_data_set_double(data, "priority_h264",
+					    roi.priority_h264);
+			obs_data_set_double(data, "priority_hevc",
+					    roi.priority_hevc);
+			obs_data_set_double(data, "priority_av1",
+					    roi.priority_av1);
+		}
 
 		if (item->type() == RoiListItem::SceneItem) {
 			obs_data_set_string(
@@ -1043,7 +1097,8 @@ static void BuildOuterRegions(vector<obs_encoder_roi> &rois, float priority,
 }
 
 static void BuildCenterFocusROI(vector<obs_encoder_roi> &rois, obs_data_t *data,
-				uint32_t width, uint32_t height)
+				uint32_t width, uint32_t height,
+				double priority)
 {
 	int64_t inner_radius = obs_data_get_int(data, "center_radius_inner");
 	bool aspect_inner = obs_data_get_bool(data, "center_aspect_inner");
@@ -1056,7 +1111,6 @@ static void BuildCenterFocusROI(vector<obs_encoder_roi> &rois, obs_data_t *data,
 	int32_t center_y = obs_data_get_int(data, "center_y");
 	double priority_outer =
 		obs_data_get_double(data, "center_priority_outer");
-	double priority = obs_data_get_double(data, "priority");
 
 	/* Inner regions (if any) */
 	BuildInnerRegions(rois, priority, steps_inner, inner_radius,
@@ -1204,8 +1258,28 @@ vector<obs_encoder_roi> RoiEditor::RegionOutlinesFromData(const string &uuid)
 	return outlines;
 }
 
+/* Priority of a region for the given codec, falling back to the region's
+ * base priority unless per-codec customization is enabled. */
+static float RegionPriorityForCodec(obs_data_t *data, const char *codec)
+{
+	const float base = (float)obs_data_get_double(data, "priority");
+
+	if (!codec || !obs_data_get_bool(data, "per_codec_priority"))
+		return base;
+
+	if (strcmp(codec, "h264") == 0)
+		return (float)obs_data_get_double(data, "priority_h264");
+	if (strcmp(codec, "hevc") == 0)
+		return (float)obs_data_get_double(data, "priority_hevc");
+	if (strcmp(codec, "av1") == 0)
+		return (float)obs_data_get_double(data, "priority_av1");
+
+	return base;
+}
+
 /// Create actual obs_encoder_roi structs from configured regions
-vector<obs_encoder_roi> RoiEditor::RegionsFromData(const string &uuid)
+vector<obs_encoder_roi> RoiEditor::RegionsFromData(const string &uuid,
+						   const char *codec)
 {
 	const auto &region_data = roi_data[uuid];
 	if (region_data.empty())
@@ -1217,7 +1291,7 @@ vector<obs_encoder_roi> RoiEditor::RegionsFromData(const string &uuid)
 	vector<obs_encoder_roi> regions;
 
 	for (obs_data_t *data : region_data) {
-		float priority = obs_data_get_double(data, "priority");
+		float priority = RegionPriorityForCodec(data, codec);
 
 		if (!obs_data_get_bool(data, "enabled"))
 			continue;
@@ -1283,7 +1357,7 @@ vector<obs_encoder_roi> RoiEditor::RegionsFromData(const string &uuid)
 			/* Center-focus ROI */
 			uint32_t cx = obs_source_get_width(source);
 			uint32_t cy = obs_source_get_height(source);
-			BuildCenterFocusROI(regions, data, cx, cy);
+			BuildCenterFocusROI(regions, data, cx, cy, priority);
 		}
 	}
 
@@ -1350,6 +1424,9 @@ static void CollectEncodersFromOutput(obs_output_t *output,
 
 void RoiEditor::UpdateEncoders()
 {
+	if (shuttingDown)
+		return;
+
 	/* Each canvas (main + e.g. a vertical canvas) has its own video mix,
 	 * active scene, and base→output scaling. Encoders are matched to
 	 * their canvas through the video mix they consume, so every output —
@@ -1473,7 +1550,6 @@ void RoiEditor::UpdateEncoders()
 
 	if (encoders.empty()) {
 		SetStatusLabel({});
-		UpdateCodecLabels(0, 0, 0);
 		return;
 	}
 
@@ -1486,53 +1562,47 @@ void RoiEditor::UpdateEncoders()
 		return;
 	}
 
-	/* Regions per canvas, in the canvas's output resolution. libobs
-	 * handles further scaling for rescaled encoders such as the Enhanced
-	 * Broadcasting/multitrack video tracks. */
+	/* Regions per (scene, codec), in the canvas's output resolution.
+	 * Regions can carry per-codec priorities, so the sets are built per
+	 * codec on demand. libobs handles further scaling for rescaled
+	 * encoders such as the Enhanced Broadcasting/multitrack tracks. */
 	std::unordered_map<std::string, std::vector<obs_encoder_roi>>
-		regions_by_scene;
+		region_cache;
 
-	for (const CanvasTarget &target : targets) {
-		if (regions_by_scene.count(target.scene_uuid))
-			continue;
-		if (!roi_data.count(target.scene_uuid)) {
-			regions_by_scene[target.scene_uuid] = {};
-			continue;
-		}
+	auto regionsFor = [&](const CanvasTarget &target,
+			      const char *codec)
+		-> const std::vector<obs_encoder_roi> & {
+		std::string key = target.scene_uuid;
+		key += "|";
+		key += codec ? codec : "";
 
-		auto regions = RegionsFromData(target.scene_uuid);
+		auto it = region_cache.find(key);
+		if (it != region_cache.end())
+			return it->second;
 
-		if (target.scale_x != 1.0 || target.scale_y != 1.0) {
-			for (obs_encoder_roi &roi : regions) {
-				roi.top = (uint32_t)((double)roi.top *
-						     target.scale_y);
-				roi.bottom = (uint32_t)((double)roi.bottom *
-							target.scale_y);
-				roi.left = (uint32_t)((double)roi.left *
-						      target.scale_x);
-				roi.right = (uint32_t)((double)roi.right *
-						       target.scale_x);
+		std::vector<obs_encoder_roi> regions;
+		if (roi_data.count(target.scene_uuid)) {
+			regions = RegionsFromData(target.scene_uuid, codec);
+
+			if (target.scale_x != 1.0 || target.scale_y != 1.0) {
+				for (obs_encoder_roi &roi : regions) {
+					roi.top = (uint32_t)((double)roi.top *
+							     target.scale_y);
+					roi.bottom =
+						(uint32_t)((double)roi.bottom *
+							   target.scale_y);
+					roi.left = (uint32_t)((double)roi.left *
+							      target.scale_x);
+					roi.right =
+						(uint32_t)((double)roi.right *
+							   target.scale_x);
+				}
 			}
 		}
 
-		regions_by_scene[target.scene_uuid] = std::move(regions);
-	}
-
-	/* Show which codecs the active encoders actually use, so the strength
-	 * rows connect to something concrete. */
-	int count_h264 = 0, count_hevc = 0, count_av1 = 0;
-	for (obs_encoder_t *enc : encoders) {
-		const char *codec = obs_encoder_get_codec(enc);
-		if (!codec)
-			continue;
-		if (strcmp(codec, "h264") == 0)
-			count_h264++;
-		else if (strcmp(codec, "hevc") == 0)
-			count_hevc++;
-		else if (strcmp(codec, "av1") == 0)
-			count_av1++;
-	}
-	UpdateCodecLabels(count_h264, count_hevc, count_av1);
+		return region_cache.emplace(key, std::move(regions))
+			.first->second;
+	};
 
 	for (obs_encoder_t *enc : encoders) {
 		/* We might have already set the ROI (e.g. shared streaming/recording encoder) */
@@ -1550,44 +1620,16 @@ void RoiEditor::UpdateEncoders()
 			}
 		}
 
-		const auto &regions = regions_by_scene[target->scene_uuid];
+		const char *codec = obs_encoder_get_codec(enc);
+		const auto &regions = regionsFor(*target, codec);
 		if (regions.empty())
 			continue;
 
-		/* Per-codec ROI strength */
-		int scale_pct = 100;
-		const char *codec = obs_encoder_get_codec(enc);
-		if (codec) {
-			if (strcmp(codec, "h264") == 0)
-				scale_pct = ui->roiCodecScaleH264
-						    ->currentData()
-						    .toInt();
-			else if (strcmp(codec, "hevc") == 0)
-				scale_pct = ui->roiCodecScaleHEVC
-						    ->currentData()
-						    .toInt();
-			else if (strcmp(codec, "av1") == 0)
-				scale_pct = ui->roiCodecScaleAV1
-						    ->currentData()
-						    .toInt();
-		}
+		blog(LOG_INFO, "Adding ROI to encoder: %s",
+		     obs_encoder_get_name(enc));
 
-		if (scale_pct == 0) {
-			blog(LOG_INFO,
-			     "Skipping ROI for encoder: %s (codec disabled)",
-			     obs_encoder_get_name(enc));
-			continue;
-		}
-
-		blog(LOG_INFO, "Adding ROI to encoder: %s (strength %d%%)",
-		     obs_encoder_get_name(enc), scale_pct);
-
-		const float factor = (float)scale_pct / 100.0f;
-		for (obs_encoder_roi roi : regions) {
-			roi.priority =
-				std::clamp(roi.priority * factor, -1.0f, 1.0f);
+		for (const obs_encoder_roi &roi : regions)
 			obs_encoder_add_roi(enc, &roi);
-		}
 	}
 
 	QStringList applied;
@@ -1596,21 +1638,6 @@ void RoiEditor::UpdateEncoders()
 			applied << QT_UTF8(obs_encoder_get_name(enc));
 	}
 	SetStatusLabel(applied);
-}
-
-void RoiEditor::UpdateCodecLabels(int h264, int hevc, int av1)
-{
-	auto label = [](const char *codec, int count) {
-		if (count <= 0)
-			return QString(codec);
-		return QString(obs_module_text("ROI.CodecScale.Active"))
-			.arg(codec)
-			.arg(count);
-	};
-
-	ui->codecScaleH264Label->setText(label("H.264", h264));
-	ui->codecScaleHEVCLabel->setText(label("HEVC", hevc));
-	ui->codecScaleAV1Label->setText(label("AV1", av1));
 }
 
 void RoiEditor::SetStatusLabel(const QStringList &encoder_names)
@@ -1879,6 +1906,8 @@ void RoiEditor::on_actionRoiDown_triggered()
 void RoiEditor::SceneItemChanged(void *param, calldata_t *)
 {
 	RoiEditor *window = reinterpret_cast<RoiEditor *>(param);
+	if (window->shuttingDown)
+		return;
 	QMetaObject::invokeMethod(window, "UpdatePreview");
 	QMetaObject::invokeMethod(window, "UpdateEncoders");
 }
@@ -1886,6 +1915,8 @@ void RoiEditor::SceneItemChanged(void *param, calldata_t *)
 void RoiEditor::ItemRemovedOrAdded(void *param, calldata_t *)
 {
 	RoiEditor *window = reinterpret_cast<RoiEditor *>(param);
+	if (window->shuttingDown)
+		return;
 	// The "item_remove" signal comes in before the item is actually removed,
 	// so defer the refresh to avoid getting the list from libobs before it is updated.
 	QMetaObject::invokeMethod(window, "RefreshSceneItems",
@@ -1895,6 +1926,8 @@ void RoiEditor::ItemRemovedOrAdded(void *param, calldata_t *)
 void RoiEditor::CanvasChannelChanged(void *param, calldata_t *)
 {
 	RoiEditor *window = reinterpret_cast<RoiEditor *>(param);
+	if (window->shuttingDown)
+		return;
 	/* Deferred: reconnecting signals would disconnect the handler that is
 	 * currently executing. */
 	QMetaObject::invokeMethod(
@@ -1906,8 +1939,21 @@ void RoiEditor::CanvasChannelChanged(void *param, calldata_t *)
 		Qt::QueuedConnection);
 }
 
+/* Disconnect all libobs signal connections while their owners are still
+ * alive, and refuse any later reconnection/encoder updates. Late callbacks
+ * (e.g. canvas channel_change firing while OBS clears scene data) would
+ * otherwise touch destroyed signal handlers. */
+void RoiEditor::PrepareShutdown()
+{
+	shuttingDown = true;
+	sceneSignals.clear();
+}
+
 void RoiEditor::ConnectSceneSignals()
 {
+	if (shuttingDown)
+		return;
+
 	sceneSignals.clear();
 
 	OBSSourceAutoRelease source = obs_frontend_get_current_scene();
@@ -2244,28 +2290,6 @@ void RoiEditor::LoadRoisFromOBSData(obs_data_t *obj)
 	if (obs_data_has_user_value(obj, "opacity"))
 		ui->previewOpacity->setValue(obs_data_get_int(obj, "opacity"));
 
-	auto setStrength = [](QComboBox *cb, int pct) {
-		int best_idx = 0;
-		int best_diff = INT_MAX;
-		for (int idx = 0; idx < cb->count(); idx++) {
-			int diff = abs(cb->itemData(idx).toInt() - pct);
-			if (diff < best_diff) {
-				best_diff = diff;
-				best_idx = idx;
-			}
-		}
-		cb->setCurrentIndex(best_idx);
-	};
-
-	if (obs_data_has_user_value(obj, "codec_scale_h264"))
-		setStrength(ui->roiCodecScaleH264,
-			    (int)obs_data_get_int(obj, "codec_scale_h264"));
-	if (obs_data_has_user_value(obj, "codec_scale_hevc"))
-		setStrength(ui->roiCodecScaleHEVC,
-			    (int)obs_data_get_int(obj, "codec_scale_hevc"));
-	if (obs_data_has_user_value(obj, "codec_scale_av1"))
-		setStrength(ui->roiCodecScaleAV1,
-			    (int)obs_data_get_int(obj, "codec_scale_av1"));
 
 	if (roi_toggle_hotkey_id != OBS_INVALID_HOTKEY_ID) {
 		OBSDataArrayAutoRelease hotkey =
@@ -2319,13 +2343,6 @@ void RoiEditor::SaveRoisToOBSData(obs_data_t *obj) const
 		obs_data_set_array(obj, "toggle_hotkey", hotkey);
 	}
 
-	obs_data_set_int(obj, "codec_scale_h264",
-			 ui->roiCodecScaleH264->currentData().toInt());
-	obs_data_set_int(obj, "codec_scale_hevc",
-			 ui->roiCodecScaleHEVC->currentData().toInt());
-	obs_data_set_int(obj, "codec_scale_av1",
-			 ui->roiCodecScaleAV1->currentData().toInt());
-
 	obs_data_set_bool(obj, "enabled", ui->enableRoi->isChecked());
 	obs_data_set_obj(obj, "scenes", scenes);
 	obs_data_set_int(obj, "opacity", ui->previewOpacity->value());
@@ -2365,6 +2382,11 @@ RoiData RoiData::fromObsData(obs_data_t *obj)
 		obs_data_get_double(obj, "smoothing_priority");
 	data.enabled = obs_data_get_bool(obj, "enabled");
 	data.priority = (float)obs_data_get_double(obj, "priority");
+	data.per_codec_priority =
+		obs_data_get_bool(obj, "per_codec_priority");
+	data.priority_h264 = (float)obs_data_get_double(obj, "priority_h264");
+	data.priority_hevc = (float)obs_data_get_double(obj, "priority_hevc");
+	data.priority_av1 = (float)obs_data_get_double(obj, "priority_av1");
 
 	data.padding = obs_data_get_int(obj, "padding");
 
@@ -2458,6 +2480,13 @@ static void OBSEvent(obs_frontend_event event, void *)
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
 	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
 		roi_edit->UpdateEncoders();
+		break;
+	/* SCRIPTING_SHUTDOWN is the last event before OBSBasic::ClearSceneData
+	 * destroys scenes and canvases; EXIT only fires afterwards, which is
+	 * too late to disconnect signal handlers safely. */
+	case OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN:
+	case OBS_FRONTEND_EVENT_EXIT:
+		roi_edit->PrepareShutdown();
 		break;
 	default:
 		break;

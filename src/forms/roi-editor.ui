@@ -185,6 +185,151 @@
             </property>
            </widget>
           </item>
+          <item row="3" column="1">
+           <widget class="QCheckBox" name="roiPropPerCodec">
+            <property name="toolTip">
+             <string>ROI.Tooltip.PerCodec</string>
+            </property>
+            <property name="text">
+             <string>ROI.Property.PerCodec</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="0" colspan="2">
+           <widget class="QWidget" name="roiPropPerCodecWidget" native="true">
+            <layout class="QFormLayout" name="perCodecLayout">
+             <item row="0" column="0">
+              <widget class="QLabel" name="perCodecH264Label">
+               <property name="text">
+                <string notr="true">H.264</string>
+               </property>
+               <property name="buddy">
+                <cstring>roiPropPriorityH264</cstring>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <layout class="QHBoxLayout" name="perCodecH264Layout">
+               <item>
+                <widget class="QSlider" name="roiPropPriorityH264">
+                 <property name="toolTip">
+                  <string>ROI.Tooltip.PerCodec</string>
+                 </property>
+                 <property name="minimum">
+                  <number>-100</number>
+                 </property>
+                 <property name="maximum">
+                  <number>100</number>
+                 </property>
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QSpinBox" name="roiPropPriorityH264Sb">
+                 <property name="suffix">
+                  <string notr="true"> %</string>
+                 </property>
+                 <property name="minimum">
+                  <number>-100</number>
+                 </property>
+                 <property name="maximum">
+                  <number>100</number>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="perCodecHEVCLabel">
+               <property name="text">
+                <string notr="true">HEVC</string>
+               </property>
+               <property name="buddy">
+                <cstring>roiPropPriorityHEVC</cstring>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <layout class="QHBoxLayout" name="perCodecHEVCLayout">
+               <item>
+                <widget class="QSlider" name="roiPropPriorityHEVC">
+                 <property name="toolTip">
+                  <string>ROI.Tooltip.PerCodec</string>
+                 </property>
+                 <property name="minimum">
+                  <number>-100</number>
+                 </property>
+                 <property name="maximum">
+                  <number>100</number>
+                 </property>
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QSpinBox" name="roiPropPriorityHEVCSb">
+                 <property name="suffix">
+                  <string notr="true"> %</string>
+                 </property>
+                 <property name="minimum">
+                  <number>-100</number>
+                 </property>
+                 <property name="maximum">
+                  <number>100</number>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="perCodecAV1Label">
+               <property name="text">
+                <string notr="true">AV1</string>
+               </property>
+               <property name="buddy">
+                <cstring>roiPropPriorityAV1</cstring>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <layout class="QHBoxLayout" name="perCodecAV1Layout">
+               <item>
+                <widget class="QSlider" name="roiPropPriorityAV1">
+                 <property name="toolTip">
+                  <string>ROI.Tooltip.PerCodec</string>
+                 </property>
+                 <property name="minimum">
+                  <number>-100</number>
+                 </property>
+                 <property name="maximum">
+                  <number>100</number>
+                 </property>
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QSpinBox" name="roiPropPriorityAV1Sb">
+                 <property name="suffix">
+                  <string notr="true"> %</string>
+                 </property>
+                 <property name="minimum">
+                  <number>-100</number>
+                 </property>
+                 <property name="maximum">
+                  <number>100</number>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
          </layout>
         </widget>
        </item>
@@ -736,69 +881,6 @@
            </item>
           </layout>
          </widget>
-        </widget>
-       </item>
-       <item>
-        <widget class="QGroupBox" name="roiCodecScaleGroupBox">
-         <property name="title">
-          <string>ROI.CodecScale</string>
-         </property>
-         <property name="toolTip">
-          <string>ROI.Tooltip.CodecScale</string>
-         </property>
-         <layout class="QFormLayout" name="codecScaleLayout">
-          <item row="0" column="0">
-           <widget class="QLabel" name="codecScaleH264Label">
-            <property name="text">
-             <string notr="true">H.264</string>
-            </property>
-            <property name="buddy">
-             <cstring>roiCodecScaleH264</cstring>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
-           <widget class="QComboBox" name="roiCodecScaleH264">
-            <property name="toolTip">
-             <string>ROI.Tooltip.CodecScale</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="codecScaleHEVCLabel">
-            <property name="text">
-             <string notr="true">HEVC</string>
-            </property>
-            <property name="buddy">
-             <cstring>roiCodecScaleHEVC</cstring>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QComboBox" name="roiCodecScaleHEVC">
-            <property name="toolTip">
-             <string>ROI.Tooltip.CodecScale</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="codecScaleAV1Label">
-            <property name="text">
-             <string notr="true">AV1</string>
-            </property>
-            <property name="buddy">
-             <cstring>roiCodecScaleAV1</cstring>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QComboBox" name="roiCodecScaleAV1">
-            <property name="toolTip">
-             <string>ROI.Tooltip.CodecScale</string>
-            </property>
-           </widget>
-          </item>
-         </layout>
         </widget>
        </item>
       </layout>

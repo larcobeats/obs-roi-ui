@@ -37,6 +37,11 @@ struct RoiData {
 	float smoothing_priority;
 	bool enabled;
 	float priority;
+	/* Optional per-codec priority overrides */
+	bool per_codec_priority = false;
+	float priority_h264 = 0.0f;
+	float priority_hevc = 0.0f;
+	float priority_av1 = 0.0f;
 
 	static RoiData fromObsData(obs_data_t *obj);
 };
@@ -63,6 +68,7 @@ public:
 
 	void ConnectSceneSignals();
 	void ConnectSignalsForScene(obs_source_t *source);
+	void PrepareShutdown();
 	void LoadRoisFromOBSData(obs_data_t *obj);
 	void SaveRoisToOBSData(obs_data_t *obj) const;
 
@@ -96,11 +102,11 @@ private:
 	void RegionItemsToData();
 	void RegionItemsFromData();
 
-	std::vector<obs_encoder_roi> RegionsFromData(const std::string &uuid);
+	std::vector<obs_encoder_roi> RegionsFromData(const std::string &uuid,
+						     const char *codec = nullptr);
 	void MoveRoiItem(Direction direction);
 	void CreateDisplay(bool recreate = false);
 	void SetStatusLabel(const QStringList &encoder_names);
-	void UpdateCodecLabels(int h264, int hevc, int av1);
 	void UpdateEditCanvasSize();
 	bool PreviewToCanvas(const QPointF &pos, uint32_t &canvas_x,
 			     uint32_t &canvas_y);
@@ -123,6 +129,10 @@ private:
 		roi_data;
 
 	bool enumerate_all_encoders = false;
+
+	/* Set on OBS_FRONTEND_EVENT_EXIT: signal handlers are disconnected
+	 * while still valid, and late callbacks must become no-ops. */
+	std::atomic_bool shuttingDown = false;
 
 	std::vector<obs_encoder_roi>
 	RegionOutlinesFromData(const std::string &uuid);
