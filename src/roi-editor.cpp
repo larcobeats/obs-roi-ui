@@ -220,15 +220,16 @@ void RoiEditor::CreateDisplay(bool recreate)
 bool RoiEditor::PreviewToCanvas(const QPointF &pos, uint32_t &canvas_x,
 				uint32_t &canvas_y)
 {
-	obs_video_info ovi;
-	if (!obs_get_video_info(&ovi))
+	const uint32_t base_width = editCanvasWidth;
+	const uint32_t base_height = editCanvasHeight;
+	if (!base_width || !base_height)
 		return false;
 
 	QSize size = GetPixelSize(ui->preview);
 	int viewport_x, viewport_y;
 	float scale;
 
-	GetScaleAndCenterPos(ovi.base_width, ovi.base_height, size.width(),
+	GetScaleAndCenterPos(base_width, base_height, size.width(),
 			     size.height(), viewport_x, viewport_y, scale);
 
 	if (scale <= 0.0f)
@@ -238,8 +239,8 @@ bool RoiEditor::PreviewToCanvas(const QPointF &pos, uint32_t &canvas_x,
 	double x = (pos.x() * dpr - viewport_x) / scale;
 	double y = (pos.y() * dpr - viewport_y) / scale;
 
-	canvas_x = (uint32_t)std::clamp(x, 0.0, (double)ovi.base_width);
-	canvas_y = (uint32_t)std::clamp(y, 0.0, (double)ovi.base_height);
+	canvas_x = (uint32_t)std::clamp(x, 0.0, (double)base_width);
+	canvas_y = (uint32_t)std::clamp(y, 0.0, (double)base_height);
 	return true;
 }
 
@@ -341,6 +342,45 @@ void RoiEditor::RefreshSceneList()
 
 	obs_frontend_source_list_free(&scenes);
 
+	/* Scenes on additional canvases (e.g. a vertical canvas), labeled
+	 * "Canvas: Scene". The main canvas is covered by the frontend list. */
+	struct CanvasEnumCtx {
+		QComboBox *cb;
+		obs_canvas_t *main;
+	};
+
+	OBSCanvasAutoRelease main_canvas = obs_get_main_canvas();
+	CanvasEnumCtx canvas_ctx{ui->sceneSelect, main_canvas.Get()};
+
+	obs_enum_canvases(
+		[](void *param, obs_canvas_t *canvas) -> bool {
+			auto ctx = static_cast<CanvasEnumCtx *>(param);
+			if (canvas == ctx->main)
+				return true;
+
+			struct SceneEnumCtx {
+				QComboBox *cb;
+				const char *canvas_name;
+			} scene_ctx{ctx->cb, obs_canvas_get_name(canvas)};
+
+			obs_canvas_enum_scenes(
+				canvas,
+				[](void *param, obs_source_t *src) -> bool {
+					auto ctx = static_cast<SceneEnumCtx *>(
+						param);
+					ctx->cb->addItem(
+						QString("%1: %2").arg(
+							QT_UTF8(ctx->canvas_name),
+							QT_UTF8(obs_source_get_name(
+								src))),
+						obs_source_get_uuid(src));
+					return true;
+				},
+				&scene_ctx);
+			return true;
+		},
+		&canvas_ctx);
+
 	if (!var.isValid()) {
 		OBSSourceAutoRelease scene = obs_frontend_get_current_scene();
 		if (scene)
@@ -349,6 +389,38 @@ void RoiEditor::RefreshSceneList()
 
 	int idx = ui->sceneSelect->findData(var);
 	ui->sceneSelect->setCurrentIndex(idx);
+	UpdateEditCanvasSize();
+}
+
+/* Resolve the base resolution of the canvas that owns the scene currently
+ * being edited, used by the preview and drag-to-draw coordinate mapping. */
+void RoiEditor::UpdateEditCanvasSize()
+{
+	obs_video_info ovi;
+	if (obs_get_video_info(&ovi)) {
+		editCanvasWidth = ovi.base_width;
+		editCanvasHeight = ovi.base_height;
+	}
+
+	auto var = ui->sceneSelect->currentData();
+	if (!var.isValid())
+		return;
+
+	const string scene_uuid = var.toString().toStdString();
+	OBSSourceAutoRelease source =
+		obs_get_source_by_uuid(scene_uuid.c_str());
+	if (!source)
+		return;
+
+	OBSCanvasAutoRelease canvas = obs_source_get_canvas(source);
+	if (!canvas)
+		return;
+
+	obs_video_info canvas_ovi;
+	if (obs_canvas_get_video_info(canvas, &canvas_ovi)) {
+		editCanvasWidth = canvas_ovi.base_width;
+		editCanvasHeight = canvas_ovi.base_height;
+	}
 }
 
 /* Combo box entries store a QVariantList of {item id, parent group item id}
@@ -439,6 +511,7 @@ void RoiEditor::closeEvent(QCloseEvent *)
 
 void RoiEditor::SceneSelectionChanged()
 {
+	UpdateEditCanvasSize();
 	RegionItemsFromData();
 	UpdatePreview();
 }
@@ -1222,42 +1295,146 @@ void RoiEditor::ToggleRoiEnabled()
 	ui->enableRoi->toggle();
 }
 
-void RoiEditor::UpdateEncoders()
+/* Active scene + base→output scaling of one canvas (video mix) */
+struct CanvasTarget {
+	video_t *video;
+	std::string scene_uuid;
+	double scale_x;
+	double scale_y;
+};
+
+static void CollectEncodersFromOutput(obs_output_t *output,
+				      std::vector<OBSEncoder> &encoders)
 {
-	OBSSourceAutoRelease scene = obs_frontend_get_current_scene();
-	if (!scene)
+	if (!output)
 		return;
 
-	const string uuid = obs_source_get_uuid(scene);
+	for (size_t idx = 0; idx < MAX_OUTPUT_VIDEO_ENCODERS; idx++) {
+		obs_encoder_t *enc = obs_output_get_video_encoder2(output, idx);
+		if (!enc)
+			continue;
+		if (!(obs_encoder_get_caps(enc) & OBS_ENCODER_CAP_ROI))
+			continue;
+
+		bool duplicate = false;
+		for (obs_encoder_t *existing : encoders) {
+			if (existing == enc) {
+				duplicate = true;
+				break;
+			}
+		}
+		if (!duplicate)
+			encoders.emplace_back(enc);
+	}
+}
+
+void RoiEditor::UpdateEncoders()
+{
+	/* Each canvas (main + e.g. a vertical canvas) has its own video mix,
+	 * active scene, and base→output scaling. Encoders are matched to
+	 * their canvas through the video mix they consume, so every output —
+	 * including third-party ones such as a vertical canvas stream or
+	 * multistream outputs, regardless of which GPU encodes them — gets
+	 * the regions of the scene it is actually showing. */
+	std::vector<CanvasTarget> targets;
+
+	{
+		OBSSourceAutoRelease scene = obs_frontend_get_current_scene();
+		obs_video_info ovi;
+		if (scene && obs_get_video_info(&ovi) && ovi.base_width &&
+		    ovi.base_height) {
+			targets.push_back(
+				{obs_get_video(),
+				 obs_source_get_uuid(scene),
+				 (double)ovi.output_width /
+					 (double)ovi.base_width,
+				 (double)ovi.output_height /
+					 (double)ovi.base_height});
+		}
+	}
+
+	OBSCanvasAutoRelease main_canvas = obs_get_main_canvas();
+	struct CanvasEnumCtx {
+		std::vector<CanvasTarget> *targets;
+		obs_canvas_t *main;
+	} canvas_ctx{&targets, main_canvas.Get()};
+
+	obs_enum_canvases(
+		[](void *param, obs_canvas_t *canvas) -> bool {
+			auto ctx = static_cast<CanvasEnumCtx *>(param);
+			if (canvas == ctx->main ||
+			    !obs_canvas_has_video(canvas))
+				return true;
+
+			OBSSourceAutoRelease active =
+				obs_canvas_get_channel(canvas, 0);
+			obs_video_info ovi;
+			if (!active ||
+			    !obs_canvas_get_video_info(canvas, &ovi) ||
+			    !ovi.base_width || !ovi.base_height)
+				return true;
+
+			ctx->targets->push_back(
+				{obs_canvas_get_video(canvas),
+				 obs_source_get_uuid(active),
+				 (double)ovi.output_width /
+					 (double)ovi.base_width,
+				 (double)ovi.output_height /
+					 (double)ovi.base_height});
+			return true;
+		},
+		&canvas_ctx);
+
+	if (targets.empty())
+		return;
 
 	std::vector<OBSEncoder> encoders;
-	std::vector<OBSOutputAutoRelease> outputs;
 
 	if (!enumerate_all_encoders) {
-		outputs.push_back(obs_frontend_get_streaming_output());
-		if (!ui->excludeRecordings->isChecked()) {
-			outputs.push_back(obs_frontend_get_recording_output());
-			outputs.push_back(
-				obs_frontend_get_replay_buffer_output());
-		}
-		outputs.push_back(obs_get_output_by_name("encoder_preview"));
+		/* All outputs, including third-party ones (vertical canvas
+		 * streams, multistream plugins, the encoder preview, ...) */
+		obs_enum_outputs(
+			[](void *param, obs_output_t *output) -> bool {
+				CollectEncodersFromOutput(
+					output,
+					*static_cast<std::vector<OBSEncoder> *>(
+						param));
+				return true;
+			},
+			&encoders);
 
-		// Find all video encoders that could reasonably be in use
-		for (obs_output_t *output : outputs) {
-			if (!output)
-				continue;
+		/* Optionally drop encoders that only serve recording/replay */
+		if (ui->excludeRecordings->isChecked()) {
+			std::vector<OBSEncoder> excluded;
+			OBSOutputAutoRelease rec =
+				obs_frontend_get_recording_output();
+			OBSOutputAutoRelease replay =
+				obs_frontend_get_replay_buffer_output();
+			CollectEncodersFromOutput(rec, excluded);
+			CollectEncodersFromOutput(replay, excluded);
 
-			for (size_t idx = 0; idx < MAX_OUTPUT_VIDEO_ENCODERS;
-			     idx++) {
-				obs_encoder_t *enc =
-					obs_output_get_video_encoder2(output,
-								      idx);
-				if (!enc)
-					continue;
-				if (obs_encoder_get_caps(enc) &
-				    OBS_ENCODER_CAP_ROI)
-					encoders.emplace_back(enc);
-			}
+			std::vector<OBSEncoder> streaming;
+			OBSOutputAutoRelease stream =
+				obs_frontend_get_streaming_output();
+			CollectEncodersFromOutput(stream, streaming);
+
+			auto is_in = [](const std::vector<OBSEncoder> &vec,
+					obs_encoder_t *enc) {
+				for (obs_encoder_t *e : vec) {
+					if (e == enc)
+						return true;
+				}
+				return false;
+			};
+
+			encoders.erase(
+				std::remove_if(
+					encoders.begin(), encoders.end(),
+					[&](const OBSEncoder &enc) {
+						return is_in(excluded, enc) &&
+						       !is_in(streaming, enc);
+					}),
+				encoders.end());
 		}
 	} else {
 		// Alternative more thorough option for special cases
@@ -1284,36 +1461,41 @@ void RoiEditor::UpdateEncoders()
 	for (obs_encoder_t *enc : encoders)
 		obs_encoder_clear_roi(enc);
 
-	if (!ui->enableRoi->isChecked() || !roi_data.count(uuid)) {
+	if (!ui->enableRoi->isChecked()) {
 		SetStatusLabel({});
 		return;
 	}
 
-	auto regions = RegionsFromData(uuid);
-	if (regions.empty()) {
-		SetStatusLabel({});
-		return;
-	}
+	/* Regions per canvas, in the canvas's output resolution. libobs
+	 * handles further scaling for rescaled encoders such as the Enhanced
+	 * Broadcasting/multitrack video tracks. */
+	std::unordered_map<std::string, std::vector<obs_encoder_roi>>
+		regions_by_scene;
 
-	/* Regions are built in base (canvas) coordinates, but encoders take
-	 * coordinates relative to their input, i.e. the output resolution.
-	 * libobs itself handles further scaling for rescaled encoders such as
-	 * the Enhanced Broadcasting/multitrack video tracks. */
-	obs_video_info ovi;
-	if (obs_get_video_info(&ovi) && ovi.base_width && ovi.base_height &&
-	    (ovi.base_width != ovi.output_width ||
-	     ovi.base_height != ovi.output_height)) {
-		const double scale_x =
-			(double)ovi.output_width / (double)ovi.base_width;
-		const double scale_y =
-			(double)ovi.output_height / (double)ovi.base_height;
-
-		for (obs_encoder_roi &roi : regions) {
-			roi.top = (uint32_t)((double)roi.top * scale_y);
-			roi.bottom = (uint32_t)((double)roi.bottom * scale_y);
-			roi.left = (uint32_t)((double)roi.left * scale_x);
-			roi.right = (uint32_t)((double)roi.right * scale_x);
+	for (const CanvasTarget &target : targets) {
+		if (regions_by_scene.count(target.scene_uuid))
+			continue;
+		if (!roi_data.count(target.scene_uuid)) {
+			regions_by_scene[target.scene_uuid] = {};
+			continue;
 		}
+
+		auto regions = RegionsFromData(target.scene_uuid);
+
+		if (target.scale_x != 1.0 || target.scale_y != 1.0) {
+			for (obs_encoder_roi &roi : regions) {
+				roi.top = (uint32_t)((double)roi.top *
+						     target.scale_y);
+				roi.bottom = (uint32_t)((double)roi.bottom *
+							target.scale_y);
+				roi.left = (uint32_t)((double)roi.left *
+						      target.scale_x);
+				roi.right = (uint32_t)((double)roi.right *
+						       target.scale_x);
+			}
+		}
+
+		regions_by_scene[target.scene_uuid] = std::move(regions);
 	}
 
 	/* Show which codecs the active encoders actually use, so the strength
@@ -1335,6 +1517,21 @@ void RoiEditor::UpdateEncoders()
 	for (obs_encoder_t *enc : encoders) {
 		/* We might have already set the ROI (e.g. shared streaming/recording encoder) */
 		if (obs_encoder_has_roi(enc))
+			continue;
+
+		/* Match the encoder to its canvas via the video mix it
+		 * consumes; unmatched encoders fall back to the main canvas. */
+		video_t *enc_video = obs_encoder_video(enc);
+		const CanvasTarget *target = &targets.front();
+		for (const CanvasTarget &candidate : targets) {
+			if (candidate.video == enc_video) {
+				target = &candidate;
+				break;
+			}
+		}
+
+		const auto &regions = regions_by_scene[target->scene_uuid];
+		if (regions.empty())
 			continue;
 
 		/* Per-codec ROI strength */
@@ -1428,8 +1625,10 @@ void RoiEditor::AddRegionItem(int type)
 
 void RoiEditor::AddBackgroundItem()
 {
-	obs_video_info ovi;
-	if (!obs_get_video_info(&ovi))
+	UpdateEditCanvasSize();
+	const uint32_t base_width = editCanvasWidth;
+	const uint32_t base_height = editCanvasHeight;
+	if (!base_width || !base_height)
 		return;
 
 	auto item = new RoiListItem(RoiListItem::Manual);
@@ -1438,8 +1637,8 @@ void RoiEditor::AddBackgroundItem()
 	roi.priority = -0.25f;
 	roi.posX = 0;
 	roi.posY = 0;
-	roi.width = ovi.base_width;
-	roi.height = ovi.base_height;
+	roi.width = base_width;
+	roi.height = base_height;
 	item->setData(ROIData, QVariant::fromValue<RoiData>(roi));
 
 	/* Insert at the bottom so explicit regions above it win on overlap. */
@@ -1673,11 +1872,60 @@ void RoiEditor::ItemRemovedOrAdded(void *param, calldata_t *)
 				  Qt::QueuedConnection);
 }
 
+void RoiEditor::CanvasChannelChanged(void *param, calldata_t *)
+{
+	RoiEditor *window = reinterpret_cast<RoiEditor *>(param);
+	/* Deferred: reconnecting signals would disconnect the handler that is
+	 * currently executing. */
+	QMetaObject::invokeMethod(
+		window,
+		[window]() {
+			window->ConnectSceneSignals();
+			window->UpdateEncoders();
+		},
+		Qt::QueuedConnection);
+}
+
 void RoiEditor::ConnectSceneSignals()
 {
 	sceneSignals.clear();
 
 	OBSSourceAutoRelease source = obs_frontend_get_current_scene();
+	if (source)
+		ConnectSignalsForScene(source);
+
+	/* Track scene switches and item changes on additional canvases */
+	OBSCanvasAutoRelease main_canvas = obs_get_main_canvas();
+	struct CanvasSignalCtx {
+		RoiEditor *editor;
+		obs_canvas_t *main;
+	} ctx{this, main_canvas.Get()};
+
+	obs_enum_canvases(
+		[](void *param, obs_canvas_t *canvas) -> bool {
+			auto ctx = static_cast<CanvasSignalCtx *>(param);
+			if (canvas == ctx->main)
+				return true;
+
+			signal_handler_t *canvas_signal =
+				obs_canvas_get_signal_handler(canvas);
+			if (canvas_signal)
+				ctx->editor->sceneSignals.emplace_back(
+					canvas_signal, "channel_change",
+					CanvasChannelChanged, ctx->editor);
+
+			OBSSourceAutoRelease active =
+				obs_canvas_get_channel(canvas, 0);
+			if (active)
+				ctx->editor->ConnectSignalsForScene(active);
+
+			return true;
+		},
+		&ctx);
+}
+
+void RoiEditor::ConnectSignalsForScene(obs_source_t *source)
+{
 	signal_handler_t *signal = obs_source_get_signal_handler(source);
 	if (!signal)
 		return;
@@ -1850,21 +2098,29 @@ void RoiEditor::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 {
 	RoiEditor *editor = static_cast<RoiEditor *>(data);
 
-	obs_video_info ovi;
-	obs_get_video_info(&ovi);
+	uint32_t base_width = editor->editCanvasWidth;
+	uint32_t base_height = editor->editCanvasHeight;
+
+	if (!base_width || !base_height) {
+		obs_video_info ovi;
+		if (!obs_get_video_info(&ovi))
+			return;
+		base_width = ovi.base_width;
+		base_height = ovi.base_height;
+	}
 
 	int viewport_x, viewport_y;
 	float scale;
 
-	GetScaleAndCenterPos(ovi.base_width, ovi.base_height, cx, cy,
-			     viewport_x, viewport_y, scale);
+	GetScaleAndCenterPos(base_width, base_height, cx, cy, viewport_x,
+			     viewport_y, scale);
 
-	int viewport_width = int(scale * float(ovi.base_width));
-	int viewport_height = int(scale * float(ovi.base_height));
+	int viewport_width = int(scale * float(base_width));
+	int viewport_height = int(scale * float(base_height));
 
 	/* Rebuild preview texture if necessary */
 	if (editor->rebuild_texture)
-		CreatePreviewTexture(editor, ovi.base_width, ovi.base_height);
+		CreatePreviewTexture(editor, base_width, base_height);
 
 	if (!editor->pointSampler) {
 		gs_sampler_info point_sampler = {};
@@ -1875,8 +2131,8 @@ void RoiEditor::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 	gs_viewport_push();
 	gs_projection_push();
 
-	gs_ortho(0.0f, float(ovi.base_width), 0.0f, float(ovi.base_height),
-		 -100.0f, 100.0f);
+	gs_ortho(0.0f, float(base_width), 0.0f, float(base_height), -100.0f,
+		 100.0f);
 	gs_set_viewport(viewport_x, viewport_y, viewport_width,
 			viewport_height);
 
@@ -2173,6 +2429,7 @@ static void SaveRoiEditor(obs_data_t *save_data, bool saving, void *)
 static void OBSEvent(obs_frontend_event event, void *)
 {
 	switch (event) {
+	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
 		roi_edit->UpdateEncoders();
 		roi_edit->ConnectSceneSignals();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <mutex>
 
 #include "ui_roi-editor.h"
@@ -61,6 +62,7 @@ public:
 	}
 
 	void ConnectSceneSignals();
+	void ConnectSignalsForScene(obs_source_t *source);
 	void LoadRoisFromOBSData(obs_data_t *obj);
 	void SaveRoisToOBSData(obs_data_t *obj) const;
 
@@ -99,6 +101,7 @@ private:
 	void CreateDisplay(bool recreate = false);
 	void SetStatusLabel(const QStringList &encoder_names);
 	void UpdateCodecLabels(int h264, int hevc, int av1);
+	void UpdateEditCanvasSize();
 	bool PreviewToCanvas(const QPointF &pos, uint32_t &canvas_x,
 			     uint32_t &canvas_y);
 
@@ -107,6 +110,7 @@ private:
 
 	static void SceneItemChanged(void *param, calldata_t *data);
 	static void ItemRemovedOrAdded(void *param, calldata_t *data);
+	static void CanvasChannelChanged(void *param, calldata_t *data);
 	static void DrawPreview(void *data, uint32_t cx, uint32_t cy);
 	static void CreatePreviewTexture(RoiEditor *editor, uint32_t cx,
 					 uint32_t cy);
@@ -135,6 +139,11 @@ private:
 	bool rebuild_texture = false;
 	uint32_t texOpacity;
 	uint32_t texBlockSize;
+
+	/* Base dimensions of the canvas owning the scene being edited,
+	 * written on the UI thread and read by the graphics thread. */
+	std::atomic<uint32_t> editCanvasWidth = 0;
+	std::atomic<uint32_t> editCanvasHeight = 0;
 
 	gs_texrender_t *texRender = nullptr;
 	gs_samplerstate_t *pointSampler = nullptr;
