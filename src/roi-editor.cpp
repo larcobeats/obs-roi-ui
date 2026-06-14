@@ -26,6 +26,24 @@ using namespace std;
 RoiEditor *roi_edit;
 static obs_hotkey_id roi_toggle_hotkey_id = OBS_INVALID_HOTKEY_ID;
 
+/* A non-main canvas may carry a transition (e.g. an Aitum Vertical stinger)
+ * on channel 0 instead of the scene itself. Resolve it to the actual active
+ * scene so regions are matched against the right scene. Returns a new ref. */
+static obs_source_t *GetCanvasActiveScene(obs_canvas_t *canvas)
+{
+	obs_source_t *channel = obs_canvas_get_channel(canvas, 0);
+	if (!channel)
+		return nullptr;
+
+	if (obs_source_get_type(channel) == OBS_SOURCE_TYPE_TRANSITION) {
+		obs_source_t *active = obs_transition_get_active_source(channel);
+		obs_source_release(channel);
+		return active;
+	}
+
+	return channel;
+}
+
 /// ToDo cleanup this whole refresh mess, just rebuild data always when necessary,
 /// and then update preview if visible, always run encoder update.
 
@@ -1464,7 +1482,7 @@ void RoiEditor::UpdateEncoders()
 				return true;
 
 			OBSSourceAutoRelease active =
-				obs_canvas_get_channel(canvas, 0);
+				GetCanvasActiveScene(canvas);
 			obs_video_info ovi;
 			if (!active ||
 			    !obs_canvas_get_video_info(canvas, &ovi) ||
@@ -1980,8 +1998,25 @@ void RoiEditor::ConnectSceneSignals()
 					canvas_signal, "channel_change",
 					CanvasChannelChanged, ctx->editor);
 
-			OBSSourceAutoRelease active =
+			/* If a transition (e.g. a stinger) sits on channel 0,
+			 * scene switches fire transition_stop rather than
+			 * channel_change, so listen for that too. */
+			OBSSourceAutoRelease channel =
 				obs_canvas_get_channel(canvas, 0);
+			if (channel &&
+			    obs_source_get_type(channel) ==
+				    OBS_SOURCE_TYPE_TRANSITION) {
+				signal_handler_t *tsh =
+					obs_source_get_signal_handler(channel);
+				if (tsh)
+					ctx->editor->sceneSignals.emplace_back(
+						tsh, "transition_stop",
+						CanvasChannelChanged,
+						ctx->editor);
+			}
+
+			OBSSourceAutoRelease active =
+				GetCanvasActiveScene(canvas);
 			if (active)
 				ctx->editor->ConnectSignalsForScene(active);
 
