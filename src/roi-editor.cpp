@@ -1703,14 +1703,38 @@ void RoiEditor::UpdateEncoders()
 			continue;
 
 		/* Match the encoder to its canvas via the video mix it
-		 * consumes; unmatched encoders fall back to the main canvas. */
+		 * consumes. Encoders that read a downscaled rendition mix won't
+		 * match any canvas video directly; for those, fall back to the
+		 * canvas whose aspect ratio is closest (so a portrait vertical
+		 * rendition gets the vertical scene, not the landscape main). */
 		video_t *enc_video = obs_encoder_video(enc);
-		const CanvasTarget *target = &targets.front();
+		const CanvasTarget *target = nullptr;
 		for (const CanvasTarget &candidate : targets) {
 			if (candidate.video == enc_video) {
 				target = &candidate;
 				break;
 			}
+		}
+		if (!target) {
+			const uint32_t ew = obs_encoder_get_width(enc);
+			const uint32_t eh = obs_encoder_get_height(enc);
+			const double enc_aspect =
+				eh ? (double)ew / (double)eh : 0.0;
+			double best_diff = 1e9;
+			for (const CanvasTarget &candidate : targets) {
+				if (!candidate.base_width ||
+				    !candidate.base_height)
+					continue;
+				double ca = (double)candidate.base_width /
+					    (double)candidate.base_height;
+				double diff = fabs(ca - enc_aspect);
+				if (diff < best_diff) {
+					best_diff = diff;
+					target = &candidate;
+				}
+			}
+			if (!target)
+				target = &targets.front();
 		}
 
 		const char *codec = obs_encoder_get_codec(enc);

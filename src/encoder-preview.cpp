@@ -206,6 +206,12 @@ void EncoderPreview::StartPreview()
 	obs_encoder_set_video(enc, obs_get_video());
 	obs_output_set_video_encoder(previewOut, enc);
 	obs_output_start(previewOut);
+
+	/* Previewing activates the encoder; re-apply ROI so an otherwise-idle
+	 * encoder (e.g. the non-EB stream encoder) gets its regions now. */
+	if (roi_edit)
+		QMetaObject::invokeMethod(roi_edit, "UpdateEncoders",
+					  Qt::QueuedConnection);
 }
 
 void EncoderPreview::StopPreview()
