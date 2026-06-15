@@ -78,6 +78,12 @@ public slots:
 	void RefreshSceneList();
 	void ToggleRoiEnabled();
 
+public:
+	/* Used by the encoder preview to drive the ROI master switch for
+	 * realtime A/B testing. */
+	void SetRoiFeatureEnabled(bool enabled);
+	bool RoiFeatureEnabled() const;
+
 private slots:
 	void on_actionAddRoi_triggered();
 	void on_actionRemoveRoi_triggered();
@@ -169,6 +175,8 @@ private:
 	uint32_t dragStartX = 0;
 	uint32_t dragStartY = 0;
 };
+
+extern RoiEditor *roi_edit;
 
 enum ROIDataRoles { ROIData = Qt::UserRole };
 

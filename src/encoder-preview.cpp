@@ -1,4 +1,5 @@
 #include "encoder-preview.hpp"
+#include "roi-editor.hpp"
 
 #ifdef BUILD_STANDALONE
 #include "external/display-helpers.hpp"
@@ -62,7 +63,16 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 	connect(ui->close, &QPushButton::clicked, this, &EncoderPreview::close);
 
 	connect(ui->encoderCombo, &QComboBox::currentIndexChanged, this,
-		[&](int idx) { ui->startStopBtn->setEnabled(idx != -1); });
+		[&](int idx) {
+			ui->startStopBtn->setEnabled(idx != -1);
+			/* Switch the live decode to the newly chosen encoder so
+			 * the user can flip through all encodes (e.g. each EB
+			 * track) without manually stopping and starting. */
+			if (idx != -1 && state != INACTIVE) {
+				StopPreview();
+				StartPreview();
+			}
+		});
 
 	connect(ui->startStopBtn, &QPushButton::clicked, this,
 		&EncoderPreview::StartStopPreview);
@@ -85,6 +95,13 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 	connect(ui->compareVerticalCb, &QCheckBox::checkStateChanged, this,
 		[&](Qt::CheckState state) {
 			compareVertical = state == Qt::Checked;
+		});
+
+	connect(ui->roiToggleCb, &QCheckBox::checkStateChanged, this,
+		[&](Qt::CheckState st) {
+			if (roi_edit)
+				roi_edit->SetRoiFeatureEnabled(st ==
+							       Qt::Checked);
 		});
 
 	connect(&timer, &QTimer::timeout, this, &EncoderPreview::UpdateStats);
@@ -165,6 +182,10 @@ void EncoderPreview::RefreshEncoders()
 {
 	static QString itemNameTemplate("%1 (%2)");
 
+	/* Block signals so repopulating doesn't trigger the auto-switch in the
+	 * combo's currentIndexChanged handler. */
+	QSignalBlocker sb(ui->encoderCombo);
+	QString previous = ui->encoderCombo->currentData().toString();
 	ui->encoderCombo->clear();
 	// Find all video encoders that could reasonably be in use
 
@@ -185,6 +206,15 @@ void EncoderPreview::RefreshEncoders()
 	};
 
 	obs_enum_encoders(cb, ui->encoderCombo);
+
+	/* Restore the previous selection if it still exists */
+	if (!previous.isEmpty()) {
+		int idx = ui->encoderCombo->findData(previous);
+		if (idx != -1)
+			ui->encoderCombo->setCurrentIndex(idx);
+	}
+	/* Signals were blocked, so update the start button state manually */
+	ui->startStopBtn->setEnabled(ui->encoderCombo->currentIndex() != -1);
 }
 
 void EncoderPreview::CreateDisplay(bool recreate)
@@ -386,6 +416,14 @@ void EncoderPreview::ShowHideDialog()
 		CreateDisplay(true);
 		if (state == INACTIVE)
 			RefreshEncoders();
+
+		/* Reflect the current ROI master-switch state */
+		if (roi_edit) {
+			QSignalBlocker sb(ui->roiToggleCb);
+			ui->roiToggleCb->setChecked(
+				roi_edit->RoiFeatureEnabled());
+		}
+
 		timer.start();
 
 		if (!geometry.isEmpty())

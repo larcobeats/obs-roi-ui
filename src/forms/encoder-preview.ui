@@ -88,6 +88,16 @@
        </property>
       </widget>
      </item>
+     <item row="4" column="0" colspan="3">
+      <widget class="QCheckBox" name="roiToggleCb">
+       <property name="toolTip">
+        <string>EncoderPreview.Tooltip.RoiToggle</string>
+       </property>
+       <property name="text">
+        <string>EncoderPreview.RoiToggle</string>
+       </property>
+      </widget>
+     </item>
      <item row="1" column="0">
       <widget class="QCheckBox" name="runInBackGroundCb">
        <property name="toolTip">

@@ -1411,6 +1411,21 @@ void RoiEditor::ToggleRoiEnabled()
 	ui->enableRoi->toggle();
 }
 
+void RoiEditor::SetRoiFeatureEnabled(bool enabled)
+{
+	/* setChecked emits checkStateChanged only on change, which is wired to
+	 * UpdateEncoders; force a re-apply either way. */
+	if (ui->enableRoi->isChecked() == enabled)
+		UpdateEncoders();
+	else
+		ui->enableRoi->setChecked(enabled);
+}
+
+bool RoiEditor::RoiFeatureEnabled() const
+{
+	return ui->enableRoi->isChecked();
+}
+
 /* Active scene + base→output scaling of one canvas (video mix) */
 struct CanvasTarget {
 	video_t *video;
