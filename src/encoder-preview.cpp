@@ -104,6 +104,11 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 							       Qt::Checked);
 		});
 
+	connect(ui->roiOutlineCb, &QCheckBox::checkStateChanged, this,
+		[&](Qt::CheckState st) {
+			showRoiOutline = st == Qt::Checked;
+		});
+
 	connect(&timer, &QTimer::timeout, this, &EncoderPreview::UpdateStats);
 	timer.setInterval(2000);
 
@@ -292,6 +297,8 @@ void EncoderPreview::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 				int(scale * float(width)),
 				int(scale * float(height)));
 		obs_source_video_render(editor->previewSource);
+		if (editor->showRoiOutline)
+			DrawRoiOutline(editor);
 
 		gs_projection_pop();
 		gs_viewport_pop();
@@ -314,12 +321,56 @@ void EncoderPreview::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 	/* Draw map texture if we have it */
 	if (editor->state == PLAYING) {
 		obs_source_video_render(editor->previewSource);
+		if (editor->showRoiOutline)
+			DrawRoiOutline(editor);
 	} else {
 		obs_source_video_render(editor->waitingText);
 	}
 
 	gs_projection_pop();
 	gs_viewport_pop();
+}
+
+void EncoderPreview::DrawRoiOutline(EncoderPreview *editor)
+{
+	OBSEncoder enc = obs_output_get_video_encoder(editor->previewOut);
+	if (!enc)
+		return;
+
+	/* The rectangles obs_encoder_enum_roi returns are already scaled to
+	 * this encoder's output resolution — the same space the decoded
+	 * preview frame is in — so they overlay exactly where ROI is applied. */
+	struct RoiRect {
+		float l, t, r, b;
+	};
+	std::vector<RoiRect> rects;
+	obs_encoder_enum_roi(
+		enc,
+		[](void *param, obs_encoder_roi *roi) {
+			auto v = static_cast<std::vector<RoiRect> *>(param);
+			v->push_back({(float)roi->left, (float)roi->top,
+				      (float)roi->right, (float)roi->bottom});
+		},
+		&rects);
+
+	if (rects.empty())
+		return;
+
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_eparam_t *color = gs_effect_get_param_by_name(solid, "color");
+	gs_effect_set_color(color, 0xFF00FF00); /* green */
+
+	while (gs_effect_loop(solid, "Solid")) {
+		for (const RoiRect &rc : rects) {
+			gs_render_start(false);
+			gs_vertex2f(rc.l, rc.t);
+			gs_vertex2f(rc.r, rc.t);
+			gs_vertex2f(rc.r, rc.b);
+			gs_vertex2f(rc.l, rc.b);
+			gs_vertex2f(rc.l, rc.t);
+			gs_render_stop(GS_LINESTRIP);
+		}
+	}
 }
 
 void EncoderPreview::CreatePreviewOutput()
@@ -440,6 +491,7 @@ void EncoderPreview::SaveSettings(obs_data_t *data)
 	obs_data_set_bool(data, "compare", ui->compareCb->isChecked());
 	obs_data_set_bool(data, "compare_vertical",
 			  ui->compareVerticalCb->isChecked());
+	obs_data_set_bool(data, "roi_outline", ui->roiOutlineCb->isChecked());
 	obs_data_set_string(data, "window_geometry",
 			    saveGeometry().toBase64().constData());
 }
@@ -451,6 +503,7 @@ void EncoderPreview::LoadSettings(obs_data_t *data)
 	ui->compareCb->setChecked(obs_data_get_bool(data, "compare"));
 	ui->compareVerticalCb->setChecked(
 		obs_data_get_bool(data, "compare_vertical"));
+	ui->roiOutlineCb->setChecked(obs_data_get_bool(data, "roi_outline"));
 
 	if (const char *geo = obs_data_get_string(data, "window_geometry"))
 		geometry = QByteArray::fromBase64(geo);

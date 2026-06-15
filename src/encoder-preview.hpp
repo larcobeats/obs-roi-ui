@@ -65,6 +65,9 @@ private:
 	void CreateDisplay(bool recreate = false);
 
 	static void DrawPreview(void *data, uint32_t cx, uint32_t cy);
+	/* Draws the previewed encoder's actual ROI rectangles as an overlay,
+	 * within the caller's encode-resolution ortho/viewport. */
+	static void DrawRoiOutline(EncoderPreview *editor);
 
 	OBSOutputAutoRelease previewOut;
 	OBSSourceAutoRelease waitingText;
@@ -79,6 +82,7 @@ private:
 	std::atomic_bool threadKill = false;
 	std::atomic_bool compareEnabled = false;
 	std::atomic_bool compareVertical = false;
+	std::atomic_bool showRoiOutline = false;
 
 	std::mutex packetMutex;
 	std::condition_variable packetCond;
