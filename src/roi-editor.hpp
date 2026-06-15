@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -92,6 +93,13 @@ public:
 	void SetEncoderTightFit(const std::string &name, bool tight);
 	bool EncoderTightFit(const std::string &name) const;
 
+	/* Per-encoder priority override (percent, -100..100). When set it
+	 * replaces the region/per-codec priority for that encoder. */
+	void SetEncoderPriority(const std::string &name, bool enabled,
+				int percent);
+	bool EncoderPriorityOverride(const std::string &name,
+				     int &percent) const;
+
 private slots:
 	void on_actionAddRoi_triggered();
 	void on_actionRemoveRoi_triggered();
@@ -147,6 +155,9 @@ private:
 
 	/* Encoder names that should use tight-fit alignment */
 	std::set<std::string> tightFitEncoders;
+
+	/* Per-encoder priority override (name -> percent, -100..100) */
+	std::map<std::string, int> encoderPriorityOverrides;
 
 	/* Set on OBS_FRONTEND_EVENT_EXIT: signal handlers are disconnected
 	 * while still valid, and late callbacks must become no-ops. */

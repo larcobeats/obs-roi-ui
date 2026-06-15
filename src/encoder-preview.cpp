@@ -66,6 +66,7 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 		[&](int idx) {
 			ui->startStopBtn->setEnabled(idx != -1);
 			SyncTightFitCheckbox();
+			SyncPriorityOverride();
 			/* Switch the live decode to the newly chosen encoder so
 			 * the user can flip through all encodes (e.g. each EB
 			 * track) without manually stopping and starting. */
@@ -117,6 +118,34 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 				roi_edit->SetEncoderTightFit(
 					name.toStdString(),
 					st == Qt::Checked);
+		});
+
+	/* Per-encoder priority override */
+	connect(ui->priorityOverrideSlider, &QSlider::valueChanged,
+		ui->priorityOverrideSb, &QSpinBox::setValue);
+	connect(ui->priorityOverrideSb, &QSpinBox::valueChanged,
+		ui->priorityOverrideSlider, &QSlider::setValue);
+
+	auto applyPriorityOverride = [&]() {
+		QString name = ui->encoderCombo->currentData().toString();
+		if (roi_edit && !name.isEmpty())
+			roi_edit->SetEncoderPriority(
+				name.toStdString(),
+				ui->priorityOverrideCb->isChecked(),
+				ui->priorityOverrideSlider->value());
+		UpdatePriorityEffectiveLabel();
+	};
+	connect(ui->priorityOverrideCb, &QCheckBox::checkStateChanged, this,
+		[&, applyPriorityOverride](Qt::CheckState st) {
+			ui->priorityOverrideRow->setEnabled(st == Qt::Checked);
+			applyPriorityOverride();
+		});
+	connect(ui->priorityOverrideSlider, &QSlider::valueChanged, this,
+		[&, applyPriorityOverride](int) {
+			if (ui->priorityOverrideCb->isChecked())
+				applyPriorityOverride();
+			else
+				UpdatePriorityEffectiveLabel();
 		});
 
 	connect(&timer, &QTimer::timeout, this, &EncoderPreview::UpdateStats);
@@ -251,6 +280,48 @@ void EncoderPreview::SyncTightFitCheckbox()
 	QSignalBlocker sb(ui->tightFitCb);
 	ui->tightFitCb->setChecked(
 		valid && roi_edit->EncoderTightFit(name.toStdString()));
+}
+
+void EncoderPreview::SyncPriorityOverride()
+{
+	QString name = ui->encoderCombo->currentData().toString();
+	bool valid = roi_edit && !name.isEmpty();
+	int percent = 0;
+	bool enabled = valid &&
+		       roi_edit->EncoderPriorityOverride(name.toStdString(),
+							 percent);
+
+	ui->priorityOverrideCb->setEnabled(valid);
+	QSignalBlocker cb(ui->priorityOverrideCb);
+	QSignalBlocker sl(ui->priorityOverrideSlider);
+	QSignalBlocker sb(ui->priorityOverrideSb);
+	ui->priorityOverrideCb->setChecked(enabled);
+	ui->priorityOverrideRow->setEnabled(enabled);
+	ui->priorityOverrideSlider->setValue(percent);
+	ui->priorityOverrideSb->setValue(percent);
+	UpdatePriorityEffectiveLabel();
+}
+
+void EncoderPreview::UpdatePriorityEffectiveLabel()
+{
+	QString name = ui->encoderCombo->currentData().toString();
+	if (name.isEmpty() || !ui->priorityOverrideCb->isChecked()) {
+		ui->priorityEffectiveLbl->setText(QString());
+		return;
+	}
+
+	/* QP scale depends on codec (NVENC: x51 for H.264/HEVC, x128 AV1) */
+	OBSEncoderAutoRelease enc =
+		obs_get_encoder_by_name(QT_TO_UTF8(name));
+	const char *codec = enc ? obs_encoder_get_codec(enc) : nullptr;
+	bool av1 = codec && strcmp(codec, "av1") == 0;
+
+	int pct = ui->priorityOverrideSlider->value();
+	int qp = (int)((av1 ? -128.0f : -51.0f) * (pct / 100.0f));
+	ui->priorityEffectiveLbl->setText(
+		QString(obs_module_text("EncoderPreview.PriorityEffective"))
+			.arg(pct)
+			.arg(qp));
 }
 
 void EncoderPreview::CreateDisplay(bool recreate)
@@ -514,6 +585,7 @@ void EncoderPreview::ShowHideDialog()
 				roi_edit->RoiFeatureEnabled());
 		}
 		SyncTightFitCheckbox();
+		SyncPriorityOverride();
 
 		timer.start();
 

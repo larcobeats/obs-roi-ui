@@ -118,6 +118,61 @@
        </property>
       </widget>
      </item>
+     <item row="7" column="0" colspan="3">
+      <widget class="QCheckBox" name="priorityOverrideCb">
+       <property name="toolTip">
+        <string>EncoderPreview.Tooltip.PriorityOverride</string>
+       </property>
+       <property name="text">
+        <string>EncoderPreview.PriorityOverride</string>
+       </property>
+      </widget>
+     </item>
+     <item row="8" column="0" colspan="3">
+      <widget class="QWidget" name="priorityOverrideRow" native="true">
+       <layout class="QHBoxLayout" name="priorityOverrideLayout">
+        <property name="leftMargin">
+         <number>18</number>
+        </property>
+        <item>
+         <widget class="QSlider" name="priorityOverrideSlider">
+          <property name="toolTip">
+           <string>EncoderPreview.Tooltip.PriorityOverride</string>
+          </property>
+          <property name="minimum">
+           <number>-100</number>
+          </property>
+          <property name="maximum">
+           <number>100</number>
+          </property>
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QSpinBox" name="priorityOverrideSb">
+          <property name="suffix">
+           <string notr="true"> %</string>
+          </property>
+          <property name="minimum">
+           <number>-100</number>
+          </property>
+          <property name="maximum">
+           <number>100</number>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="priorityEffectiveLbl">
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
      <item row="1" column="0">
       <widget class="QCheckBox" name="runInBackGroundCb">
        <property name="toolTip">

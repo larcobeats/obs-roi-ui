@@ -63,6 +63,8 @@ private:
 
 	void RefreshEncoders();
 	void SyncTightFitCheckbox();
+	void SyncPriorityOverride();
+	void UpdatePriorityEffectiveLabel();
 	void CreateDisplay(bool recreate = false);
 
 	static void DrawPreview(void *data, uint32_t cx, uint32_t cy);

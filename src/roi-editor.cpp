@@ -1443,6 +1443,28 @@ bool RoiEditor::EncoderTightFit(const std::string &name) const
 	return tightFitEncoders.count(name) > 0;
 }
 
+void RoiEditor::SetEncoderPriority(const std::string &name, bool enabled,
+				   int percent)
+{
+	if (enabled)
+		encoderPriorityOverrides[name] =
+			std::clamp(percent, -100, 100);
+	else
+		encoderPriorityOverrides.erase(name);
+	UpdateEncoders();
+	obs_frontend_save();
+}
+
+bool RoiEditor::EncoderPriorityOverride(const std::string &name,
+				       int &percent) const
+{
+	auto it = encoderPriorityOverrides.find(name);
+	if (it == encoderPriorityOverrides.end())
+		return false;
+	percent = it->second;
+	return true;
+}
+
 /* Active scene of one canvas plus the base (region authoring) resolution.
  * Regions are scaled per-encoder to each encoder's own input resolution
  * rather than a single per-canvas factor, because Enhanced Broadcasting
@@ -1724,8 +1746,14 @@ void RoiEditor::UpdateEncoders()
 		const bool at_encode_res =
 			media_w == encode_w && media_h == encode_h;
 		const uint32_t block = nvenc_block_size(codec);
-		const bool tight =
-			tightFitEncoders.count(obs_encoder_get_name(enc)) > 0;
+		const char *enc_name = obs_encoder_get_name(enc);
+		const bool tight = tightFitEncoders.count(enc_name) > 0;
+
+		int ovPct = 0;
+		const bool hasPriorityOverride =
+			EncoderPriorityOverride(enc_name, ovPct);
+		const float overridePriority =
+			std::clamp((float)ovPct / 100.0f, -1.0f, 1.0f);
 
 		blog(LOG_INFO,
 		     "Adding ROI to encoder: %s (scale %.3fx%.3f, %ux%u, block %u%s, %s)",
@@ -1795,6 +1823,10 @@ void RoiEditor::UpdateEncoders()
 			roi.top = top;
 			roi.right = right;
 			roi.bottom = bottom;
+			/* per-encoder priority override replaces the
+			 * region/per-codec priority for this encoder */
+			if (hasPriorityOverride)
+				roi.priority = overridePriority;
 			obs_encoder_add_roi(enc, &roi);
 		}
 	}
@@ -2587,6 +2619,22 @@ void RoiEditor::LoadRoisFromOBSData(obs_data_t *obj)
 		}
 	}
 
+	encoderPriorityOverrides.clear();
+	OBSDataArrayAutoRelease prioArr =
+		obs_data_get_array(obj, "encoder_priority_overrides");
+	if (prioArr) {
+		size_t count = obs_data_array_count(prioArr);
+		for (size_t idx = 0; idx < count; idx++) {
+			OBSDataAutoRelease item =
+				obs_data_array_item(prioArr, idx);
+			const char *name = obs_data_get_string(item, "name");
+			if (name && *name)
+				encoderPriorityOverrides[name] =
+					(int)obs_data_get_int(item,
+							      "priority");
+		}
+	}
+
 
 	if (roi_toggle_hotkey_id != OBS_INVALID_HOTKEY_ID) {
 		OBSDataArrayAutoRelease hotkey =
@@ -2647,6 +2695,15 @@ void RoiEditor::SaveRoisToOBSData(obs_data_t *obj) const
 		obs_data_array_push_back(tightArr, item);
 	}
 	obs_data_set_array(obj, "tight_fit_encoders", tightArr);
+
+	OBSDataArrayAutoRelease prioArr = obs_data_array_create();
+	for (const auto &kv : encoderPriorityOverrides) {
+		OBSDataAutoRelease item = obs_data_create();
+		obs_data_set_string(item, "name", kv.first.c_str());
+		obs_data_set_int(item, "priority", kv.second);
+		obs_data_array_push_back(prioArr, item);
+	}
+	obs_data_set_array(obj, "encoder_priority_overrides", prioArr);
 
 	obs_data_set_bool(obj, "enabled", ui->enableRoi->isChecked());
 	obs_data_set_obj(obj, "scenes", scenes);
