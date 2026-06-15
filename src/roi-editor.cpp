@@ -13,6 +13,8 @@
 #include <graphics/matrix4.h>
 #include <util/profiler.hpp>
 
+#include <cmath>
+
 #include <QAction>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -1714,37 +1716,33 @@ void RoiEditor::UpdateEncoders()
 		     media_h, block, at_encode_res ? ", aligned" : "");
 
 		for (obs_encoder_roi roi : regions) {
-			/* round-to-nearest minimises the sub-pixel bias that
-			 * plain truncation introduces */
+			/* Bias every step outward so the region always fully
+			 * covers the source — a slight overhang is preferable
+			 * to cropping the camera. Floor the top/left, ceil the
+			 * bottom/right when scaling, then snap outward to the
+			 * codec's block grid. */
 			uint32_t left =
-				(uint32_t)((double)roi.left * scale_x + 0.5);
+				(uint32_t)floor((double)roi.left * scale_x);
 			uint32_t top =
-				(uint32_t)((double)roi.top * scale_y + 0.5);
+				(uint32_t)floor((double)roi.top * scale_y);
 			uint32_t right =
-				(uint32_t)((double)roi.right * scale_x + 0.5);
+				(uint32_t)ceil((double)roi.right * scale_x);
 			uint32_t bottom =
-				(uint32_t)((double)roi.bottom * scale_y + 0.5);
+				(uint32_t)ceil((double)roi.bottom * scale_y);
 
 			if (at_encode_res && block) {
-				/* Snap each edge to the nearest block boundary
-				 * so the region hugs the source as tightly as
-				 * the codec's block granularity allows (rather
-				 * than always expanding outward). */
-				left = ((left + block / 2) / block) * block;
-				top = ((top + block / 2) / block) * block;
-				right = ((right + block / 2) / block) * block;
-				bottom = ((bottom + block / 2) / block) * block;
-
-				/* keep at least one block and stay in frame */
-				if (right <= left)
-					right = left + block;
-				if (bottom <= top)
-					bottom = top + block;
-				if (encode_w && right > encode_w)
-					right = encode_w;
-				if (encode_h && bottom > encode_h)
-					bottom = encode_h;
+				left = (left / block) * block;
+				top = (top / block) * block;
+				right = ((right + block - 1) / block) * block;
+				bottom = ((bottom + block - 1) / block) *
+					 block;
 			}
+
+			/* never exceed the encode dimensions */
+			if (encode_w && right > encode_w)
+				right = encode_w;
+			if (encode_h && bottom > encode_h)
+				bottom = encode_h;
 
 			roi.left = left;
 			roi.top = top;
