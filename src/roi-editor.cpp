@@ -1428,6 +1428,21 @@ bool RoiEditor::RoiFeatureEnabled() const
 	return ui->enableRoi->isChecked();
 }
 
+void RoiEditor::SetEncoderTightFit(const std::string &name, bool tight)
+{
+	if (tight)
+		tightFitEncoders.insert(name);
+	else
+		tightFitEncoders.erase(name);
+	UpdateEncoders();
+	obs_frontend_save();
+}
+
+bool RoiEditor::EncoderTightFit(const std::string &name) const
+{
+	return tightFitEncoders.count(name) > 0;
+}
+
 /* Active scene of one canvas plus the base (region authoring) resolution.
  * Regions are scaled per-encoder to each encoder's own input resolution
  * rather than a single per-canvas factor, because Enhanced Broadcasting
@@ -1709,33 +1724,65 @@ void RoiEditor::UpdateEncoders()
 		const bool at_encode_res =
 			media_w == encode_w && media_h == encode_h;
 		const uint32_t block = nvenc_block_size(codec);
+		const bool tight =
+			tightFitEncoders.count(obs_encoder_get_name(enc)) > 0;
 
 		blog(LOG_INFO,
-		     "Adding ROI to encoder: %s (scale %.3fx%.3f, %ux%u, block %u%s)",
+		     "Adding ROI to encoder: %s (scale %.3fx%.3f, %ux%u, block %u%s, %s)",
 		     obs_encoder_get_name(enc), scale_x, scale_y, media_w,
-		     media_h, block, at_encode_res ? ", aligned" : "");
+		     media_h, block, at_encode_res ? ", aligned" : "",
+		     tight ? "tight" : "cover");
 
 		for (obs_encoder_roi roi : regions) {
-			/* Bias every step outward so the region always fully
-			 * covers the source — a slight overhang is preferable
-			 * to cropping the camera. Floor the top/left, ceil the
-			 * bottom/right when scaling, then snap outward to the
-			 * codec's block grid. */
-			uint32_t left =
-				(uint32_t)floor((double)roi.left * scale_x);
-			uint32_t top =
-				(uint32_t)floor((double)roi.top * scale_y);
-			uint32_t right =
-				(uint32_t)ceil((double)roi.right * scale_x);
-			uint32_t bottom =
-				(uint32_t)ceil((double)roi.bottom * scale_y);
+			uint32_t left, top, right, bottom;
 
-			if (at_encode_res && block) {
-				left = (left / block) * block;
-				top = (top / block) * block;
-				right = ((right + block - 1) / block) * block;
-				bottom = ((bottom + block - 1) / block) *
-					 block;
+			if (tight) {
+				/* Round each edge to the nearest block so the
+				 * region hugs the source (may trim edges). */
+				left = (uint32_t)((double)roi.left * scale_x +
+						  0.5);
+				top = (uint32_t)((double)roi.top * scale_y +
+						 0.5);
+				right = (uint32_t)((double)roi.right * scale_x +
+						   0.5);
+				bottom = (uint32_t)((double)roi.bottom *
+							    scale_y +
+						    0.5);
+				if (at_encode_res && block) {
+					left = ((left + block / 2) / block) *
+					       block;
+					top = ((top + block / 2) / block) *
+					      block;
+					right = ((right + block / 2) / block) *
+						block;
+					bottom = ((bottom + block / 2) /
+						  block) *
+						 block;
+					if (right <= left)
+						right = left + block;
+					if (bottom <= top)
+						bottom = top + block;
+				}
+			} else {
+				/* Bias outward so the region always fully
+				 * covers the source (slight overhang). */
+				left = (uint32_t)floor((double)roi.left *
+						       scale_x);
+				top = (uint32_t)floor((double)roi.top *
+						      scale_y);
+				right = (uint32_t)ceil((double)roi.right *
+						       scale_x);
+				bottom = (uint32_t)ceil((double)roi.bottom *
+							scale_y);
+				if (at_encode_res && block) {
+					left = (left / block) * block;
+					top = (top / block) * block;
+					right = ((right + block - 1) / block) *
+						block;
+					bottom = ((bottom + block - 1) /
+						  block) *
+						 block;
+				}
 			}
 
 			/* never exceed the encode dimensions */
@@ -2526,6 +2573,20 @@ void RoiEditor::LoadRoisFromOBSData(obs_data_t *obj)
 	if (obs_data_has_user_value(obj, "opacity"))
 		ui->previewOpacity->setValue(obs_data_get_int(obj, "opacity"));
 
+	tightFitEncoders.clear();
+	OBSDataArrayAutoRelease tightArr =
+		obs_data_get_array(obj, "tight_fit_encoders");
+	if (tightArr) {
+		size_t count = obs_data_array_count(tightArr);
+		for (size_t idx = 0; idx < count; idx++) {
+			OBSDataAutoRelease item =
+				obs_data_array_item(tightArr, idx);
+			const char *name = obs_data_get_string(item, "name");
+			if (name && *name)
+				tightFitEncoders.insert(name);
+		}
+	}
+
 
 	if (roi_toggle_hotkey_id != OBS_INVALID_HOTKEY_ID) {
 		OBSDataArrayAutoRelease hotkey =
@@ -2578,6 +2639,14 @@ void RoiEditor::SaveRoisToOBSData(obs_data_t *obj) const
 			obs_hotkey_save(roi_toggle_hotkey_id);
 		obs_data_set_array(obj, "toggle_hotkey", hotkey);
 	}
+
+	OBSDataArrayAutoRelease tightArr = obs_data_array_create();
+	for (const std::string &name : tightFitEncoders) {
+		OBSDataAutoRelease item = obs_data_create();
+		obs_data_set_string(item, "name", name.c_str());
+		obs_data_array_push_back(tightArr, item);
+	}
+	obs_data_set_array(obj, "tight_fit_encoders", tightArr);
 
 	obs_data_set_bool(obj, "enabled", ui->enableRoi->isChecked());
 	obs_data_set_obj(obj, "scenes", scenes);

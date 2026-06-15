@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <mutex>
+#include <set>
+#include <string>
 
 #include "ui_roi-editor.h"
 
@@ -84,6 +86,12 @@ public:
 	void SetRoiFeatureEnabled(bool enabled);
 	bool RoiFeatureEnabled() const;
 
+	/* Per-encoder "tight fit": round regions to the nearest block (hugs
+	 * the source, may trim edges) instead of expanding outward to fully
+	 * cover it. Keyed by encoder name. */
+	void SetEncoderTightFit(const std::string &name, bool tight);
+	bool EncoderTightFit(const std::string &name) const;
+
 private slots:
 	void on_actionAddRoi_triggered();
 	void on_actionRemoveRoi_triggered();
@@ -136,6 +144,9 @@ private:
 		roi_data;
 
 	bool enumerate_all_encoders = false;
+
+	/* Encoder names that should use tight-fit alignment */
+	std::set<std::string> tightFitEncoders;
 
 	/* Set on OBS_FRONTEND_EVENT_EXIT: signal handlers are disconnected
 	 * while still valid, and late callbacks must become no-ops. */

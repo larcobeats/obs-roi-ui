@@ -108,6 +108,16 @@
        </property>
       </widget>
      </item>
+     <item row="6" column="0" colspan="3">
+      <widget class="QCheckBox" name="tightFitCb">
+       <property name="toolTip">
+        <string>EncoderPreview.Tooltip.TightFit</string>
+       </property>
+       <property name="text">
+        <string>EncoderPreview.TightFit</string>
+       </property>
+      </widget>
+     </item>
      <item row="1" column="0">
       <widget class="QCheckBox" name="runInBackGroundCb">
        <property name="toolTip">

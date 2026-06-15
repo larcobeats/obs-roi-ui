@@ -65,6 +65,7 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 	connect(ui->encoderCombo, &QComboBox::currentIndexChanged, this,
 		[&](int idx) {
 			ui->startStopBtn->setEnabled(idx != -1);
+			SyncTightFitCheckbox();
 			/* Switch the live decode to the newly chosen encoder so
 			 * the user can flip through all encodes (e.g. each EB
 			 * track) without manually stopping and starting. */
@@ -107,6 +108,15 @@ EncoderPreview::EncoderPreview(QWidget *parent)
 	connect(ui->roiOutlineCb, &QCheckBox::checkStateChanged, this,
 		[&](Qt::CheckState st) {
 			showRoiOutline = st == Qt::Checked;
+		});
+
+	connect(ui->tightFitCb, &QCheckBox::checkStateChanged, this,
+		[&](Qt::CheckState st) {
+			QString name = ui->encoderCombo->currentData().toString();
+			if (roi_edit && !name.isEmpty())
+				roi_edit->SetEncoderTightFit(
+					name.toStdString(),
+					st == Qt::Checked);
 		});
 
 	connect(&timer, &QTimer::timeout, this, &EncoderPreview::UpdateStats);
@@ -202,11 +212,14 @@ void EncoderPreview::RefreshEncoders()
 				obs_encoder_get_id(enc));
 			const char *name = obs_encoder_get_name(enc);
 
-			/* Append the GPU so it's clear which card (e.g. a
-			 * second GPU) each encoder renders on. */
-			int gpu = RoiEncoderGpuIndex(enc);
 			QString label = itemNameTemplate.arg(name).arg(
 				display_name);
+			/* Resolution (e.g. 1080p) so the track is obvious */
+			uint32_t eh = obs_encoder_get_height(enc);
+			if (eh)
+				label += QString("  %1p").arg(eh);
+			/* GPU so it's clear which card each encoder renders on */
+			int gpu = RoiEncoderGpuIndex(enc);
 			if (gpu == -1)
 				label += " [GPU 0]";
 			else if (gpu >= 0)
@@ -228,6 +241,16 @@ void EncoderPreview::RefreshEncoders()
 	}
 	/* Signals were blocked, so update the start button state manually */
 	ui->startStopBtn->setEnabled(ui->encoderCombo->currentIndex() != -1);
+}
+
+void EncoderPreview::SyncTightFitCheckbox()
+{
+	QString name = ui->encoderCombo->currentData().toString();
+	bool valid = roi_edit && !name.isEmpty();
+	ui->tightFitCb->setEnabled(valid);
+	QSignalBlocker sb(ui->tightFitCb);
+	ui->tightFitCb->setChecked(
+		valid && roi_edit->EncoderTightFit(name.toStdString()));
 }
 
 void EncoderPreview::CreateDisplay(bool recreate)
@@ -454,7 +477,15 @@ void EncoderPreview::UpdateStats()
 		(long double)(now - lastStatsTime) / 1000000000.0l;
 	double kbps = (long double)bitsBetween / timePassed / 1000.0l;
 
-	QString text = obs_module_text("EncoderPreview.Bitrate");
+	QString text;
+	/* Prefix with the encode resolution (e.g. 1080p) while previewing */
+	OBSEncoder enc = obs_output_get_video_encoder(previewOut);
+	if (enc) {
+		uint32_t eh = obs_encoder_get_height(enc);
+		if (eh)
+			text += QString("%1p   ").arg(eh);
+	}
+	text += obs_module_text("EncoderPreview.Bitrate");
 	text += " ";
 	text += loc.toString(kbps, 'f', 0);
 	text += " kbps";
@@ -482,6 +513,7 @@ void EncoderPreview::ShowHideDialog()
 			ui->roiToggleCb->setChecked(
 				roi_edit->RoiFeatureEnabled());
 		}
+		SyncTightFitCheckbox();
 
 		timer.start();
 
