@@ -1437,6 +1437,19 @@ struct CanvasTarget {
 	uint32_t base_height;
 };
 
+/* NVENC applies the QP map at macroblock/CTB granularity: 16px for H.264,
+ * 32px for HEVC, 64px for AV1. Aligning regions to that grid ourselves keeps
+ * coverage clean and deterministic instead of relying on the encoder's
+ * internal floor-snapping (which gets coarse on low-resolution renditions). */
+static uint32_t nvenc_block_size(const char *codec)
+{
+	if (codec && strcmp(codec, "hevc") == 0)
+		return 32;
+	if (codec && strcmp(codec, "av1") == 0)
+		return 64;
+	return 16; /* h264 and fallback */
+}
+
 static void CollectEncodersFromOutput(obs_output_t *output,
 				      std::vector<OBSEncoder> &encoders)
 {
@@ -1647,29 +1660,58 @@ void RoiEditor::UpdateEncoders()
 		 * encoder's media here is correct in both cases — and fixes
 		 * misalignment on downscaled tracks that libobs does not
 		 * rescale (e.g. Enhanced Broadcasting renditions). */
+		const uint32_t media_w =
+			enc_video ? video_output_get_width(enc_video) : 0;
+		const uint32_t media_h =
+			enc_video ? video_output_get_height(enc_video) : 0;
+
 		double scale_x = 1.0;
 		double scale_y = 1.0;
-		if (enc_video && target->base_width && target->base_height) {
-			scale_x = (double)video_output_get_width(enc_video) /
-				  (double)target->base_width;
-			scale_y = (double)video_output_get_height(enc_video) /
+		if (media_w && media_h && target->base_width &&
+		    target->base_height) {
+			scale_x = (double)media_w / (double)target->base_width;
+			scale_y = (double)media_h /
 				  (double)target->base_height;
 		}
 
+		/* When libobs will not rescale afterwards (media already equals
+		 * the encode size, i.e. these renditions) we are at the final
+		 * resolution and can align to the codec's block grid. */
+		const bool at_encode_res =
+			media_w == obs_encoder_get_width(enc) &&
+			media_h == obs_encoder_get_height(enc);
+		const uint32_t block = nvenc_block_size(codec);
+
 		blog(LOG_INFO,
-		     "Adding ROI to encoder: %s (scale %.3fx%.3f)",
-		     obs_encoder_get_name(enc), scale_x, scale_y);
+		     "Adding ROI to encoder: %s (scale %.3fx%.3f, %ux%u, block %u%s)",
+		     obs_encoder_get_name(enc), scale_x, scale_y, media_w,
+		     media_h, block, at_encode_res ? ", aligned" : "");
 
 		for (obs_encoder_roi roi : regions) {
-			if (scale_x != 1.0 || scale_y != 1.0) {
-				roi.top = (uint32_t)((double)roi.top * scale_y);
-				roi.bottom =
-					(uint32_t)((double)roi.bottom * scale_y);
-				roi.left =
-					(uint32_t)((double)roi.left * scale_x);
-				roi.right =
-					(uint32_t)((double)roi.right * scale_x);
+			/* round-to-nearest minimises the sub-pixel bias that
+			 * plain truncation introduces */
+			uint32_t left =
+				(uint32_t)((double)roi.left * scale_x + 0.5);
+			uint32_t top =
+				(uint32_t)((double)roi.top * scale_y + 0.5);
+			uint32_t right =
+				(uint32_t)((double)roi.right * scale_x + 0.5);
+			uint32_t bottom =
+				(uint32_t)((double)roi.bottom * scale_y + 0.5);
+
+			if (at_encode_res) {
+				/* snap outward to fully cover the source */
+				left = (left / block) * block;
+				top = (top / block) * block;
+				right = ((right + block - 1) / block) * block;
+				bottom = ((bottom + block - 1) / block) *
+					 block;
 			}
+
+			roi.left = left;
+			roi.top = top;
+			roi.right = right;
+			roi.bottom = bottom;
 			obs_encoder_add_roi(enc, &roi);
 		}
 	}
