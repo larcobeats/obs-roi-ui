@@ -1426,12 +1426,15 @@ bool RoiEditor::RoiFeatureEnabled() const
 	return ui->enableRoi->isChecked();
 }
 
-/* Active scene + base→output scaling of one canvas (video mix) */
+/* Active scene of one canvas plus the base (region authoring) resolution.
+ * Regions are scaled per-encoder to each encoder's own input resolution
+ * rather than a single per-canvas factor, because Enhanced Broadcasting
+ * lower-quality tracks read from further-downscaled video mixes. */
 struct CanvasTarget {
 	video_t *video;
 	std::string scene_uuid;
-	double scale_x;
-	double scale_y;
+	uint32_t base_width;
+	uint32_t base_height;
 };
 
 static void CollectEncodersFromOutput(obs_output_t *output,
@@ -1477,13 +1480,9 @@ void RoiEditor::UpdateEncoders()
 		obs_video_info ovi;
 		if (scene && obs_get_video_info(&ovi) && ovi.base_width &&
 		    ovi.base_height) {
-			targets.push_back(
-				{obs_get_video(),
-				 obs_source_get_uuid(scene),
-				 (double)ovi.output_width /
-					 (double)ovi.base_width,
-				 (double)ovi.output_height /
-					 (double)ovi.base_height});
+			targets.push_back({obs_get_video(),
+					   obs_source_get_uuid(scene),
+					   ovi.base_width, ovi.base_height});
 		}
 	}
 
@@ -1510,11 +1509,8 @@ void RoiEditor::UpdateEncoders()
 
 			ctx->targets->push_back(
 				{obs_canvas_get_video(canvas),
-				 obs_source_get_uuid(active),
-				 (double)ovi.output_width /
-					 (double)ovi.base_width,
-				 (double)ovi.output_height /
-					 (double)ovi.base_height});
+				 obs_source_get_uuid(active), ovi.base_width,
+				 ovi.base_height});
 			return true;
 		},
 		&canvas_ctx);
@@ -1599,10 +1595,9 @@ void RoiEditor::UpdateEncoders()
 		return;
 	}
 
-	/* Regions per (scene, codec), in the canvas's output resolution.
-	 * Regions can carry per-codec priorities, so the sets are built per
-	 * codec on demand. libobs handles further scaling for rescaled
-	 * encoders such as the Enhanced Broadcasting/multitrack tracks. */
+	/* Base-resolution region sets per (scene, codec). Per-codec priority
+	 * means the sets are built per codec on demand; scaling to each
+	 * encoder's resolution happens below, per encoder. */
 	std::unordered_map<std::string, std::vector<obs_encoder_roi>>
 		region_cache;
 
@@ -1618,24 +1613,8 @@ void RoiEditor::UpdateEncoders()
 			return it->second;
 
 		std::vector<obs_encoder_roi> regions;
-		if (roi_data.count(target.scene_uuid)) {
+		if (roi_data.count(target.scene_uuid))
 			regions = RegionsFromData(target.scene_uuid, codec);
-
-			if (target.scale_x != 1.0 || target.scale_y != 1.0) {
-				for (obs_encoder_roi &roi : regions) {
-					roi.top = (uint32_t)((double)roi.top *
-							     target.scale_y);
-					roi.bottom =
-						(uint32_t)((double)roi.bottom *
-							   target.scale_y);
-					roi.left = (uint32_t)((double)roi.left *
-							      target.scale_x);
-					roi.right =
-						(uint32_t)((double)roi.right *
-							   target.scale_x);
-				}
-			}
-		}
 
 		return region_cache.emplace(key, std::move(regions))
 			.first->second;
@@ -1662,11 +1641,37 @@ void RoiEditor::UpdateEncoders()
 		if (regions.empty())
 			continue;
 
-		blog(LOG_INFO, "Adding ROI to encoder: %s",
-		     obs_encoder_get_name(enc));
+		/* Scale regions from the canvas base resolution to this
+		 * encoder's own input resolution. libobs additionally scales
+		 * by the encoder's scaled_size (if set), so scaling to the
+		 * encoder's media here is correct in both cases — and fixes
+		 * misalignment on downscaled tracks that libobs does not
+		 * rescale (e.g. Enhanced Broadcasting renditions). */
+		double scale_x = 1.0;
+		double scale_y = 1.0;
+		if (enc_video && target->base_width && target->base_height) {
+			scale_x = (double)video_output_get_width(enc_video) /
+				  (double)target->base_width;
+			scale_y = (double)video_output_get_height(enc_video) /
+				  (double)target->base_height;
+		}
 
-		for (const obs_encoder_roi &roi : regions)
+		blog(LOG_INFO,
+		     "Adding ROI to encoder: %s (scale %.3fx%.3f)",
+		     obs_encoder_get_name(enc), scale_x, scale_y);
+
+		for (obs_encoder_roi roi : regions) {
+			if (scale_x != 1.0 || scale_y != 1.0) {
+				roi.top = (uint32_t)((double)roi.top * scale_y);
+				roi.bottom =
+					(uint32_t)((double)roi.bottom * scale_y);
+				roi.left =
+					(uint32_t)((double)roi.left * scale_x);
+				roi.right =
+					(uint32_t)((double)roi.right * scale_x);
+			}
 			obs_encoder_add_roi(enc, &roi);
+		}
 	}
 
 	QStringList applied;
