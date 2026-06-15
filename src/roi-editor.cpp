@@ -1450,6 +1450,31 @@ static uint32_t nvenc_block_size(const char *codec)
 	return 16; /* h264 and fallback */
 }
 
+/* Returns the GPU index an NVENC encoder runs on (from its "device"
+ * setting); -1 means the default/compositing GPU. Non-NVENC encoders
+ * return -2 (not applicable). */
+int RoiEncoderGpuIndex(obs_encoder_t *enc)
+{
+	const char *id = obs_encoder_get_id(enc);
+	if (!id || !strstr(id, "nvenc"))
+		return -2;
+
+	OBSDataAutoRelease s = obs_encoder_get_settings(enc);
+	if (s && obs_data_has_user_value(s, "device"))
+		return (int)obs_data_get_int(s, "device");
+	return -1;
+}
+
+static QString RoiGpuLabel(obs_encoder_t *enc)
+{
+	int gpu = RoiEncoderGpuIndex(enc);
+	if (gpu == -2)
+		return QString();
+	if (gpu < 0)
+		return QString("GPU 0 (default)");
+	return QString("GPU %1").arg(gpu);
+}
+
 static void CollectEncodersFromOutput(obs_output_t *output,
 				      std::vector<OBSEncoder> &encoders)
 {
@@ -1677,9 +1702,10 @@ void RoiEditor::UpdateEncoders()
 		/* When libobs will not rescale afterwards (media already equals
 		 * the encode size, i.e. these renditions) we are at the final
 		 * resolution and can align to the codec's block grid. */
+		const uint32_t encode_w = obs_encoder_get_width(enc);
+		const uint32_t encode_h = obs_encoder_get_height(enc);
 		const bool at_encode_res =
-			media_w == obs_encoder_get_width(enc) &&
-			media_h == obs_encoder_get_height(enc);
+			media_w == encode_w && media_h == encode_h;
 		const uint32_t block = nvenc_block_size(codec);
 
 		blog(LOG_INFO,
@@ -1699,13 +1725,25 @@ void RoiEditor::UpdateEncoders()
 			uint32_t bottom =
 				(uint32_t)((double)roi.bottom * scale_y + 0.5);
 
-			if (at_encode_res) {
-				/* snap outward to fully cover the source */
-				left = (left / block) * block;
-				top = (top / block) * block;
-				right = ((right + block - 1) / block) * block;
-				bottom = ((bottom + block - 1) / block) *
-					 block;
+			if (at_encode_res && block) {
+				/* Snap each edge to the nearest block boundary
+				 * so the region hugs the source as tightly as
+				 * the codec's block granularity allows (rather
+				 * than always expanding outward). */
+				left = ((left + block / 2) / block) * block;
+				top = ((top + block / 2) / block) * block;
+				right = ((right + block / 2) / block) * block;
+				bottom = ((bottom + block / 2) / block) * block;
+
+				/* keep at least one block and stay in frame */
+				if (right <= left)
+					right = left + block;
+				if (bottom <= top)
+					bottom = top + block;
+				if (encode_w && right > encode_w)
+					right = encode_w;
+				if (encode_h && bottom > encode_h)
+					bottom = encode_h;
 			}
 
 			roi.left = left;
@@ -1906,12 +1944,16 @@ void RoiEditor::on_actionVerifyRoi_triggered()
 	} else {
 		for (obs_encoder_t *enc : encoders) {
 			const char *codec = obs_encoder_get_codec(enc);
-			report += QString("%1\n  %2  %3x%4\n")
+			QString gpu = RoiGpuLabel(enc);
+			report += QString("%1\n  %2  %3x%4%5\n")
 					  .arg(QT_UTF8(obs_encoder_get_name(
 						  enc)))
 					  .arg(QT_UTF8(codec ? codec : "?"))
 					  .arg(obs_encoder_get_width(enc))
-					  .arg(obs_encoder_get_height(enc));
+					  .arg(obs_encoder_get_height(enc))
+					  .arg(gpu.isEmpty()
+						       ? QString()
+						       : "  " + gpu);
 
 			if (!obs_encoder_has_roi(enc)) {
 				report += QString("  %1\n\n").arg(

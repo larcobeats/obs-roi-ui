@@ -202,9 +202,17 @@ void EncoderPreview::RefreshEncoders()
 				obs_encoder_get_id(enc));
 			const char *name = obs_encoder_get_name(enc);
 
-			vec->addItem(
-				itemNameTemplate.arg(name).arg(display_name),
-				name);
+			/* Append the GPU so it's clear which card (e.g. a
+			 * second GPU) each encoder renders on. */
+			int gpu = RoiEncoderGpuIndex(enc);
+			QString label = itemNameTemplate.arg(name).arg(
+				display_name);
+			if (gpu == -1)
+				label += " [GPU 0]";
+			else if (gpu >= 0)
+				label += QString(" [GPU %1]").arg(gpu);
+
+			vec->addItem(label, name);
 		}
 
 		return true;

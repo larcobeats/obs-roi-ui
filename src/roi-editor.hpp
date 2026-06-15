@@ -178,6 +178,10 @@ private:
 
 extern RoiEditor *roi_edit;
 
+/* GPU index an NVENC encoder runs on (-1 = default/compositing GPU,
+ * -2 = not an NVENC encoder). */
+int RoiEncoderGpuIndex(obs_encoder_t *enc);
+
 enum ROIDataRoles { ROIData = Qt::UserRole };
 
 class RoiListItem : public QListWidgetItem {
