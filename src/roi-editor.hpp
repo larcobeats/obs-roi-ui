@@ -86,6 +86,7 @@ private slots:
 	void on_actionCopyRegions_triggered();
 	void on_actionImportRegions_triggered();
 	void on_actionExportRegions_triggered();
+	void on_actionVerifyRoi_triggered();
 
 	void SceneSelectionChanged();
 	void ItemSelected(QListWidgetItem *item, QListWidgetItem *);

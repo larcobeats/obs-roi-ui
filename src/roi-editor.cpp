@@ -14,12 +14,16 @@
 #include <util/profiler.hpp>
 
 #include <QAction>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QObject>
 #include <QMenu>
+#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QVBoxLayout>
 
 using namespace std;
 
@@ -1807,6 +1811,101 @@ void RoiEditor::on_actionCopyRegions_triggered()
 
 	obs_frontend_save();
 	UpdateEncoders();
+}
+
+namespace {
+struct RoiReportCtx {
+	QString *report;
+	bool av1;
+	int count;
+};
+}
+
+/* Read-only report of the ROI each active encoder will actually hand to the
+ * driver. Uses obs_encoder_enum_roi (the same call NVENC makes), so the
+ * rectangles are already scaled to each encoder's resolution — proving
+ * whether the scaled H.264 EB tracks really receive the regions. */
+void RoiEditor::on_actionVerifyRoi_triggered()
+{
+	std::vector<OBSEncoder> encoders;
+	obs_enum_outputs(
+		[](void *param, obs_output_t *output) -> bool {
+			CollectEncodersFromOutput(
+				output,
+				*static_cast<std::vector<OBSEncoder> *>(param));
+			return true;
+		},
+		&encoders);
+
+	QString report;
+
+	if (encoders.empty()) {
+		report = obs_module_text("ROI.Verify.NoEncoders");
+	} else {
+		for (obs_encoder_t *enc : encoders) {
+			const char *codec = obs_encoder_get_codec(enc);
+			report += QString("%1\n  %2  %3x%4\n")
+					  .arg(QT_UTF8(obs_encoder_get_name(
+						  enc)))
+					  .arg(QT_UTF8(codec ? codec : "?"))
+					  .arg(obs_encoder_get_width(enc))
+					  .arg(obs_encoder_get_height(enc));
+
+			if (!obs_encoder_has_roi(enc)) {
+				report += QString("  %1\n\n").arg(
+					obs_module_text("ROI.Verify.NotApplied"));
+				continue;
+			}
+
+			RoiReportCtx ctx{&report,
+					 codec && strcmp(codec, "av1") == 0, 0};
+			obs_encoder_enum_roi(
+				enc,
+				[](void *param, obs_encoder_roi *roi) {
+					auto c = static_cast<RoiReportCtx *>(
+						param);
+					c->count++;
+					const float k = c->av1 ? -128.0f
+							       : -51.0f;
+					const int qp =
+						(int)(k * roi->priority);
+					*c->report +=
+						QString("    [%1,%2 %3x%4]  prio %5  QP %6\n")
+							.arg(roi->left)
+							.arg(roi->top)
+							.arg(roi->right -
+							     roi->left)
+							.arg(roi->bottom -
+							     roi->top)
+							.arg(roi->priority, 0,
+							     'f', 2)
+							.arg(qp);
+				},
+				&ctx);
+
+			report += QString("  %1\n\n")
+					  .arg(QString(obs_module_text(
+							       "ROI.Verify.Applied"))
+						       .arg(ctx.count));
+		}
+	}
+
+	QDialog dlg(this);
+	dlg.setWindowTitle(obs_module_text("ROI.Verify.Title"));
+	dlg.resize(640, 460);
+	auto layout = new QVBoxLayout(&dlg);
+	auto view = new QPlainTextEdit(&dlg);
+	view->setReadOnly(true);
+	QFont mono("monospace");
+	mono.setStyleHint(QFont::Monospace);
+	view->setFont(mono);
+	view->setPlainText(report);
+	layout->addWidget(view);
+	auto buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+	connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+	connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+	layout->addWidget(buttons);
+	dlg.exec();
 }
 
 void RoiEditor::on_actionExportRegions_triggered()

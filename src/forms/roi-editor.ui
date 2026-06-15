@@ -93,6 +93,8 @@
          <addaction name="actionCopyRegions"/>
          <addaction name="actionImportRegions"/>
          <addaction name="actionExportRegions"/>
+         <addaction name="separator"/>
+         <addaction name="actionVerifyRoi"/>
         </widget>
        </item>
        <item>
@@ -1157,6 +1159,14 @@
    </property>
    <property name="toolTip">
     <string>ROI.Tooltip.Export</string>
+   </property>
+  </action>
+  <action name="actionVerifyRoi">
+   <property name="text">
+    <string>ROI.ItemAction.Verify</string>
+   </property>
+   <property name="toolTip">
+    <string>ROI.Tooltip.Verify</string>
    </property>
   </action>
  </widget>
